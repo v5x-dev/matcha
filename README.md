@@ -48,9 +48,11 @@ Add the upstream credentials to `.env`:
 VEX_EVENTS_TOKEN=your_vex_events_token
 YOUTUBE_API_KEY=your_youtube_data_api_key
 DATABASE_URL=file:local.db
+# only needed when DATABASE_URL points at Turso
+TURSO_AUTH_TOKEN=your_turso_auth_token
 ```
 
-`DATABASE_URL` defaults to a local sqlite database. libsql/turso URLs are also supported by the libsql client.
+`DATABASE_URL` defaults to a local sqlite database. libsql/turso URLs are also supported by the libsql client; set `TURSO_AUTH_TOKEN` for a hosted Turso database.
 
 Initialize or update the local schema, then start the development server:
 
