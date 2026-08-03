@@ -27,26 +27,10 @@ jobs:
         with:
           node-version: 22
 
-      - name: setup bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: install dependencies
-        run: bun install --frozen-lockfile
-
       - name: install vercel cli
         run: npm install --global vercel@latest
-
-      - name: pull vercel settings
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
-
-      - name: build for production
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-        run: vercel build --prod --token="$VERCEL_TOKEN"
 
       - name: deploy to production
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+        run: vercel deploy --prod --yes --token="$VERCEL_TOKEN"
