@@ -1,0 +1,52 @@
+name: deploy to vercel
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vercel-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_ORG_ID: team_c4olGEpbRHS2cHje7cfWGy9e
+      VERCEL_PROJECT_ID: prj_z5DNiUTqgBRsiGzKO5i0x99SwyZg
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: setup bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: install vercel cli
+        run: npm install --global vercel@latest
+
+      - name: pull vercel settings
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: build for production
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+
+      - name: deploy to production
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
