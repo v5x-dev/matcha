@@ -12,7 +12,7 @@ This project is a v5rc film analysis web app. Designed for easy scouting and yel
 
 ## design guidelines
 
-- All user-facing text in the UI has to be lowercase. This does not include talking to the developer.
+- All user-facing text in the UI has to be lowercase. This does not apply to conversations with the developer or pull request descriptions; both may use normal capitalization.
 - Use shadcn-svelte components wherever you can put them.
 - Design in a similar style to twitch.tv, with a v5 inspired twitch.
 - Follow all colors from `src/routes/layout.css`, do not make up your own colors in this design, unless explicitly told to.

@@ -186,7 +186,7 @@
 	<Sidebar.Content
 		bind:ref={viewportRef}
 		hideScrollbar={false}
-		class="matches-sidebar-scroll [scrollbar-gutter:stable] px-2"
+		class="matches-sidebar-scroll scrollbar-gutter-stable px-2"
 		style="overflow-y: scroll;"
 	>
 		<div class="relative w-full shrink-0" style="height: {$virtualizer.getTotalSize()}px;">
