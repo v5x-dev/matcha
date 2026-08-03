@@ -2,9 +2,26 @@ import { query } from '$app/server';
 import { error } from '@sveltejs/kit';
 import * as cache from '$lib/server/event-cache';
 import type { EventData, MatchData } from 'events.vex';
-import type { EventListItem } from '$lib/event-types';
+import { z } from 'zod';
+import type { EventLevel } from 'events.vex';
+import type { EventSearchInput, EventSearchResult } from '$lib/event-types';
 
-export const listEvents = query<EventListItem[]>(() => cache.listEvents());
+const searchSchema = z.object({
+	query: z.string().trim().max(100),
+	levels: z.array(z.string().max(32)).max(6),
+	regions: z.array(z.string().max(64)).max(50),
+	timeframe: z.enum(['any', 'upcoming', 'ongoing', 'past']),
+	cursor: z.string().max(500).nullable().optional(),
+	limit: z.number().int().min(1).max(100).optional()
+});
+
+export const searchEvents = query(searchSchema, async (input): Promise<EventSearchResult> =>
+	cache.searchEvents({
+		...input,
+		levels: input.levels as EventLevel[],
+		cursor: input.cursor ?? null
+	} as EventSearchInput)
+);
 
 export const getEvent = query('unchecked', async (id: number): Promise<EventData> => {
 	const event = await cache.getEvent(id);
