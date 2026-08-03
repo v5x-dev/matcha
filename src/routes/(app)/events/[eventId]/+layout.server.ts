@@ -7,17 +7,18 @@ import {
 	matchPlaybackStart,
 	matchPlaybackWindow
 } from '$lib/server/db/schema';
+import { measureServer } from '$lib/server/instrumentation';
 
 export async function load({ params }) {
 	const eventId = Number(params.eventId);
 
 	if (!Number.isInteger(eventId) || eventId <= 0) error(404, 'event not found');
 
-	const event = await cache.getEvent(eventId);
+	const event = await measureServer('event.load', () => cache.getEvent(eventId), { eventId });
 	if (!event) error(404, 'event not found');
 
 	const [matches, savedMatchWindows, savedMatchStarts, savedPlaybackOffsets] = await Promise.all([
-		cache.listMatches(eventId),
+		measureServer('match.load', () => cache.listMatches(eventId), { eventId }),
 		db
 			.select({
 				matchId: matchPlaybackWindow.matchId,

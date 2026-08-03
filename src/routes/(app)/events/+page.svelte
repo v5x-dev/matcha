@@ -1,16 +1,25 @@
 <script lang="ts">
-	import type { EventListItem } from '$lib/event-types';
+	import type { EventListItem, EventSearchInput, EventSearchResult } from '$lib/event-types';
 	import { createVirtualizer } from '@tanstack/svelte-virtual';
 	import * as Item from '$lib/components/ui/item';
 	import * as InputGroup from '$lib/components/ui/input-group';
+	import { Button } from '$lib/components/ui/button';
 	import { resolve } from '$app/paths';
+	import { searchEvents } from '$lib/remote/event.remote';
+	import {
+		finishBrowserMetric,
+		initialPayloadBytes,
+		recordBrowserMetric,
+		startBrowserMetric
+	} from '$lib/client/performance';
 	import { Badge } from '$lib/components/ui/badge';
 	import EventFiltersSheet from './event-filters-sheet.svelte';
-	import { EventFilters, filterEvents } from './event-filters.svelte';
+	import { EventFilters } from './event-filters.svelte';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import XIcon from '@lucide/svelte/icons/x';
 	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
 	import { watch } from 'runed';
+	import { onMount } from 'svelte';
 
 	const rangeFormatter = new Intl.DateTimeFormat('en-US', {
 		month: 'short',
@@ -20,12 +29,95 @@
 
 	let { data } = $props();
 
-	const allEvents = $derived(data.events);
-
 	const filters = new EventFilters();
 	let filtersOpen = $state(false);
+	let result = $state<EventSearchResult | null>(null);
+	const currentResult = $derived(result ?? data.eventSearch);
+	const events = $derived(currentResult.events);
+	let isLoading = $state(false);
+	let isLoadingMore = $state(false);
+	let requestSequence = 0;
+	let requestTimer: ReturnType<typeof setTimeout> | undefined;
+	let skipInitialRequest = true;
+	let firstUsableListMeasured = false;
 
-	const events = $derived(await filterEvents(allEvents, filters));
+	function searchInput(cursor: string | null = null): EventSearchInput {
+		return {
+			query: filters.query,
+			levels: [...filters.levels],
+			regions: [...filters.regions],
+			timeframe: filters.timeframe,
+			cursor,
+			limit: 50
+		};
+	}
+
+	$effect(() => {
+		const input = searchInput();
+		if (skipInitialRequest) {
+			skipInitialRequest = false;
+			return;
+		}
+
+		const sequence = ++requestSequence;
+		if (requestTimer) clearTimeout(requestTimer);
+		isLoading = true;
+		requestTimer = setTimeout(() => {
+			const metric = startBrowserMetric('event-list.search-latency', {
+				queryLength: input.query.trim().length,
+				filterCount:
+					input.levels.length + input.regions.length + (input.timeframe === 'any' ? 0 : 1)
+			});
+			void searchEvents(input)
+				.then((next) => {
+					if (sequence !== requestSequence) return;
+					result = next;
+					finishBrowserMetric(metric, { resultCount: next.total });
+				})
+				.catch(() => {
+					if (sequence === requestSequence)
+						result = { ...currentResult, events: [], total: 0, nextCursor: null };
+				})
+				.finally(() => {
+					if (sequence === requestSequence) isLoading = false;
+				});
+		}, 180);
+
+		return () => {
+			if (requestTimer) clearTimeout(requestTimer);
+		};
+	});
+
+	async function loadMoreEvents() {
+		if (!currentResult.nextCursor || isLoadingMore) return;
+		const sequence = ++requestSequence;
+		isLoadingMore = true;
+		try {
+			const next = await searchEvents(searchInput(currentResult.nextCursor));
+			if (sequence !== requestSequence) return;
+			result = {
+				...next,
+				events: [...currentResult.events, ...next.events]
+			};
+		} finally {
+			if (sequence === requestSequence) isLoadingMore = false;
+		}
+	}
+
+	onMount(() => {
+		recordBrowserMetric('event-list.initial-payload-size', initialPayloadBytes() ?? 0, {
+			initialEventCount: currentResult.events.length
+		});
+	});
+
+	$effect(() => {
+		if (firstUsableListMeasured || events.length === 0) return;
+		firstUsableListMeasured = true;
+		recordBrowserMetric('event-list.time-to-first-usable-list', performance.now(), {
+			resultCount: currentResult.total,
+			initialEventCount: events.length
+		});
+	});
 
 	let viewportRef = $state<HTMLElement | null>(null);
 
@@ -50,7 +142,7 @@
 	});
 
 	watch(
-		() => [filters.query, filters.levels, filters.regions, filters.timeframe],
+		() => [filters.query, filters.levels, filters.regions, filters.timeframe, events.length],
 		() => {
 			$virtualizer.measure();
 			viewportRef?.scrollTo({ top: 0 });
@@ -109,6 +201,9 @@
 				</InputGroup.Button>
 			</InputGroup.Addon>
 		</InputGroup.Root>
+		{#if isLoading}
+			<p class="px-1 pt-1 text-xs text-muted-foreground" aria-live="polite">searching events...</p>
+		{/if}
 	</div>
 
 	<div class="mr-2 min-h-0 flex-1 overflow-y-auto" bind:this={viewportRef}>
@@ -155,7 +250,25 @@
 		{#if events.length === 0}
 			<p class="px-2 py-6 text-center text-sm text-muted-foreground">no events found</p>
 		{/if}
+		{#if currentResult.nextCursor}
+			<div class="px-2 pb-2">
+				<Button
+					variant="outline"
+					class="w-full"
+					disabled={isLoadingMore}
+					onclick={() => void loadMoreEvents()}
+					data-testid="load-more-events"
+				>
+					{isLoadingMore ? 'loading more events...' : 'load more events'}
+				</Button>
+			</div>
+		{/if}
 	</div>
 </div>
 
-<EventFiltersSheet bind:open={filtersOpen} {filters} events={allEvents} />
+<EventFiltersSheet
+	bind:open={filtersOpen}
+	{filters}
+	facets={currentResult.facets}
+	total={currentResult.total}
+/>

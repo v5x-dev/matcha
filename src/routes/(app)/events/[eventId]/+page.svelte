@@ -11,6 +11,7 @@
 		savePlaybackOffset
 	} from '$lib/remote/match-playback.remote';
 	import { listEventVideos, type EventVideo } from '$lib/remote/video.remote';
+	import { finishBrowserMetric, startBrowserMetric } from '$lib/client/performance';
 	import { groupMatchesByStreamDay, streamDayOf } from '$lib/stream-days';
 	import { matchPlayback, type MatchPlayback } from '$lib/video-playback';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
@@ -28,7 +29,7 @@
 	import { Slider } from 'svelte-awesome-slider';
 	import { onDestroy, onMount } from 'svelte';
 	import { SvelteMap } from 'svelte/reactivity';
-	import YoutubePlayer from 'youtube-player';
+	import type YoutubePlayer from 'youtube-player';
 
 	type MatchWindow = { startSeconds: number; endSeconds: number };
 
@@ -63,24 +64,42 @@
 	let videos = $state<EventVideo[]>([]);
 	let videoEventId: number | null = null;
 	let videoRequest = 0;
+	let isDiscoveringVideos = $state(false);
+	let videoDiscoveryMetric: ReturnType<typeof startBrowserMetric> | null = null;
+	let playableVideoMetric: ReturnType<typeof startBrowserMetric> | null = null;
 	$effect(() => {
 		const currentEventId = eventId;
 		if (videoEventId !== currentEventId) {
 			videoEventId = null;
 			videos = [];
 			videoRequest++;
+			isDiscoveringVideos = false;
 		}
 
 		if (!activeMatch || videoEventId === currentEventId) return;
 
 		videoEventId = currentEventId;
 		const request = ++videoRequest;
+		isDiscoveringVideos = true;
+		videoDiscoveryMetric = startBrowserMetric('event.video-discovery');
+		playableVideoMetric = startBrowserMetric('event.time-to-playable-video');
 		void listEventVideos(currentEventId)
 			.then((result) => {
-				if (request === videoRequest) videos = result.videos;
+				if (request !== videoRequest) return;
+				videos = result.videos;
+				isDiscoveringVideos = false;
+				finishBrowserMetric(videoDiscoveryMetric, {
+					resultCount: result.videos.length,
+					warningCount: result.warnings.length
+				});
+				videoDiscoveryMetric = null;
 			})
 			.catch(() => {
-				if (request === videoRequest) videos = [];
+				if (request !== videoRequest) return;
+				videos = [];
+				isDiscoveringVideos = false;
+				finishBrowserMetric(videoDiscoveryMetric, { resultCount: 0, failed: true });
+				videoDiscoveryMetric = null;
 			});
 	});
 	const playback = $derived(
@@ -88,7 +107,9 @@
 	);
 	// an event streamed over several days has a match on every day that the recording missed, so say
 	// so rather than leaving the previous day's film on screen looking like the wrong match
-	const missingFilm = $derived(activeMatch !== undefined && playback === null);
+	const missingFilm = $derived(
+		!isDiscoveringVideos && activeMatch !== undefined && playback === null
+	);
 
 	let player: ReturnType<typeof YoutubePlayer> | undefined;
 	let loadedVideoId: string | undefined;
@@ -103,7 +124,9 @@
 	let isMuted = $state(true);
 	let scrubbing = false;
 	let loopingMatch = false;
-	let progressInterval: ReturnType<typeof setInterval> | undefined;
+	let progressTimer: ReturnType<typeof setTimeout> | undefined;
+	let progressInFlight = false;
+	let durationVideoId: string | null = null;
 	let updateSequence = 0;
 
 	// the player iframe is letterboxed to 16:9 here so youtube never paints its own black bars
@@ -194,6 +217,17 @@
 		return Math.max(min, Math.min(max, value));
 	}
 
+	function stopProgressPolling() {
+		if (progressTimer) clearTimeout(progressTimer);
+		progressTimer = undefined;
+	}
+
+	function scheduleProgressPolling() {
+		stopProgressPolling();
+		if (!player || document.hidden || !isPlaying) return;
+		progressTimer = setTimeout(() => void refreshProgress(), 500);
+	}
+
 	function matchHref(matchId: number): string {
 		return resolve(`/(app)/events/[eventId]?match=${matchId}`, {
 			eventId: eventId.toString()
@@ -201,15 +235,11 @@
 	}
 
 	async function refreshProgress() {
-		if (!player) return;
+		if (!player || progressInFlight || document.hidden || !isPlaying) return;
+		progressInFlight = true;
 
 		try {
-			const [nextCurrent, nextDuration] = await Promise.all([
-				player.getCurrentTime(),
-				player.getDuration()
-			]);
-
-			if (Number.isFinite(nextDuration) && nextDuration > 0) durationSeconds = nextDuration;
+			const nextCurrent = await player.getCurrentTime();
 
 			const currentWindow = matchWindow;
 			if (
@@ -240,6 +270,20 @@
 			}
 		} catch {
 			// The iframe can disappear while its final progress request is in flight.
+		} finally {
+			progressInFlight = false;
+			scheduleProgressPolling();
+		}
+	}
+
+	async function loadDurationFor(videoId: string) {
+		if (!player || durationVideoId === videoId) return;
+		durationVideoId = videoId;
+		try {
+			const duration = await player.getDuration();
+			if (Number.isFinite(duration) && duration > 0) durationSeconds = duration;
+		} catch {
+			// duration is best effort; the controls remain usable without it.
 		}
 	}
 
@@ -284,9 +328,11 @@
 		if (isPlaying) {
 			await player.pauseVideo();
 			isPlaying = false;
+			scheduleProgressPolling();
 		} else {
 			await player.playVideo();
 			isPlaying = true;
+			scheduleProgressPolling();
 		}
 	}
 
@@ -311,6 +357,7 @@
 			await player.seekTo(matchWindow.startSeconds, true);
 			await player.playVideo();
 			isPlaying = true;
+			scheduleProgressPolling();
 		} finally {
 			scrubbing = false;
 		}
@@ -388,6 +435,8 @@
 		() => {
 			// a match the recordings do not cover must not silently keep another day's film playing
 			if (missingFilm) {
+				updateSequence++;
+				stopProgressPolling();
 				void player?.pauseVideo();
 				appliedMatchId = null;
 				appliedStartSeconds = null;
@@ -400,29 +449,35 @@
 			loopingMatch = false;
 
 			const initialWindow = activeMatch && playback ? windowFor(activeMatch.id, playback) : null;
-			const createdPlayer = !player;
-
-			if (!player) {
-				player = YoutubePlayer('youtube-player', {
-					videoId: initialVideo.videoId,
-					playerVars: {
-						controls: 0,
-						autoplay: 1,
-						playsinline: 1,
-						rel: 0,
-						start: initialWindow?.startSeconds
-					}
-				});
-				player.on('stateChange', (state) => {
-					isPlaying = state.data === 1;
-				});
-				loadedVideoId = initialVideo.videoId;
-				progressInterval = setInterval(() => void refreshProgress(), 500);
-			}
-
 			const sequence = ++updateSequence;
 
 			void (async () => {
+				let createdPlayer = false;
+				if (!player) {
+					const { default: createYoutubePlayer } = await import('youtube-player');
+					if (sequence !== updateSequence) return;
+					player = createYoutubePlayer('youtube-player', {
+						videoId: initialVideo.videoId,
+						playerVars: {
+							controls: 0,
+							autoplay: 1,
+							playsinline: 1,
+							rel: 0,
+							start: initialWindow?.startSeconds
+						}
+					});
+					createdPlayer = true;
+					loadedVideoId = initialVideo.videoId;
+					player.on('stateChange', (state) => {
+						isPlaying = state.data === 1;
+						scheduleProgressPolling();
+						if (state.data === 1) {
+							finishBrowserMetric(playableVideoMetric, { videoId: loadedVideoId ?? null });
+							playableVideoMetric = null;
+						}
+					});
+				}
+
 				if (createdPlayer) {
 					await player!.mute();
 					isMuted = true;
@@ -432,6 +487,8 @@
 					if (loadedVideoId === playback.video.videoId) {
 						await player!.seekTo(initialWindow.startSeconds, true);
 					} else {
+						durationVideoId = null;
+						durationSeconds = 0;
 						loadedVideoId = playback.video.videoId;
 						await player!.loadVideoById(playback.video.videoId, initialWindow.startSeconds);
 					}
@@ -439,7 +496,9 @@
 					sliderSeconds = initialWindow.startSeconds;
 				}
 
+				if (loadedVideoId) await loadDurationFor(loadedVideoId);
 				await player!.playVideo();
+				scheduleProgressPolling();
 
 				// A newer click owns the status if player commands from two selections overlap.
 				if (sequence === updateSequence) {
@@ -459,12 +518,20 @@
 		}
 
 		window.addEventListener(MATCH_RESTART_EVENT, handleRestart);
-		return () => window.removeEventListener(MATCH_RESTART_EVENT, handleRestart);
+		function handleVisibilityChange() {
+			scheduleProgressPolling();
+		}
+
+		document.addEventListener('visibilitychange', handleVisibilityChange);
+		return () => {
+			window.removeEventListener(MATCH_RESTART_EVENT, handleRestart);
+			document.removeEventListener('visibilitychange', handleVisibilityChange);
+		};
 	});
 
 	onDestroy(() => {
 		updateSequence++;
-		if (progressInterval) clearInterval(progressInterval);
+		stopProgressPolling();
 		void player?.destroy();
 	});
 </script>
@@ -504,6 +571,16 @@
 			<div class="h-full w-full" id="youtube-player"></div>
 		</div>
 	</div>
+
+	{#if isDiscoveringVideos}
+		<div
+			class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 bg-background/90 text-center"
+			aria-live="polite"
+		>
+			<p class="text-sm font-medium text-foreground">finding event film...</p>
+			<p class="text-xs text-muted-foreground">checking the event webcast and youtube</p>
+		</div>
+	{/if}
 
 	{#if missingFilm}
 		<div

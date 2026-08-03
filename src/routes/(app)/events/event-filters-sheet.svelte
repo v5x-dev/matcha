@@ -1,30 +1,54 @@
 <script lang="ts">
 	import type { EventLevel } from 'events.vex';
-	import type { EventListItem } from '$lib/event-types';
+	import { searchEvents } from '$lib/remote/event.remote';
+	import type { EventFacet, EventSearchResult } from '$lib/event-types';
 	import { Button } from '$lib/components/ui/button';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import XIcon from '@lucide/svelte/icons/x';
-	import {
-		EventFilters,
-		filterEvents,
-		levelFacets,
-		regionFacets,
-		timeframes,
-		type Timeframe
-	} from './event-filters.svelte';
+	import { EventFilters, timeframes, type Timeframe } from './event-filters.svelte';
 
 	let {
 		open = $bindable(false),
 		filters,
-		events
-	}: { open?: boolean; filters: EventFilters; events: EventListItem[] } = $props();
+		facets,
+		total
+	}: {
+		open?: boolean;
+		filters: EventFilters;
+		facets: EventSearchResult['facets'];
+		total: number;
+	} = $props();
 
 	// changes are staged in a draft: nothing hits the list until "show results".
 	const draft = new EventFilters();
 
-	const draftResults = $derived(await filterEvents(events, draft));
-	const levels = $derived(levelFacets(events));
-	const regions = $derived(regionFacets(events));
+	let draftResult = $state<EventSearchResult | null>(null);
+	const levels = $derived(facets.levels as EventFacet[]);
+	const regions = $derived(facets.regions as EventFacet[]);
+	let requestSequence = 0;
+	let requestTimer: ReturnType<typeof setTimeout> | undefined;
+
+	$effect(() => {
+		if (!open) return;
+		const input = {
+			query: draft.query,
+			levels: [...draft.levels],
+			regions: [...draft.regions],
+			timeframe: draft.timeframe,
+			limit: 1
+		};
+		const sequence = ++requestSequence;
+		if (requestTimer) clearTimeout(requestTimer);
+		requestTimer = setTimeout(() => {
+			void searchEvents(input).then((result) => {
+				if (sequence === requestSequence) draftResult = result;
+			});
+		}, 120);
+
+		return () => {
+			if (requestTimer) clearTimeout(requestTimer);
+		};
+	});
 
 	$effect(() => {
 		if (!open) return;
@@ -156,7 +180,7 @@
 
 		<div class="mt-auto flex flex-row items-center gap-2 border-t border-border p-6">
 			<Button variant="ghost" onclick={() => draft.reset()}>reset</Button>
-			<Button class="flex-1" onclick={apply}>show {draftResults.length} events</Button>
+			<Button class="flex-1" onclick={apply}>show {draftResult?.total ?? total} events</Button>
 		</div>
 	</dialog>
 </div>

@@ -1,11 +1,18 @@
 import { YOUTUBE_API_KEY } from '$env/static/private';
 import type { EventData } from 'events.vex';
+import { eq } from 'drizzle-orm';
+import { db } from './db';
+import { eventVideo, eventVideoSync } from './db/schema';
+import { measureExternalRequest, recordServerTiming } from './instrumentation';
 
 const API_BASE_URL = 'https://www.googleapis.com/youtube/v3';
 const VIDEO_ID_PATTERN = /^[\w-]{11}$/;
 const CHANNEL_ID_PATTERN = /^UC[\w-]{22}$/;
 /** how many distinct channels we are willing to spend search quota on for one event. */
 const MAX_CHANNELS = 6;
+const MAX_YOUTUBE_REQUESTS = 20;
+const MAX_CHANNEL_UPLOAD_PAGES = 6;
+const VIDEO_CACHE_TTL = 15 * 60 * 1000;
 /** a field broadcast runs for hours; anything shorter is a clip, a short, or a highlights reel. */
 const MIN_BROADCAST_SECONDS = 20 * 60;
 
@@ -48,6 +55,28 @@ type DiscoveredReference = {
 	confidence: number;
 };
 
+type DiscoveryMetrics = {
+	youtubeRequests: number;
+	cacheLookups: number;
+	cacheHits: number;
+	resultCount: number;
+	warnings: number;
+};
+
+type DiscoveryContext = {
+	metrics: DiscoveryMetrics;
+	warnings: string[];
+};
+
+class YouTubeRequestBudgetExceeded extends Error {
+	constructor() {
+		super('youtube discovery request budget exceeded');
+	}
+}
+
+const pendingEventDiscoveries = new Map<number, Promise<EventVideoResult>>();
+const pendingChannelUploads = new Map<string, Promise<string[]>>();
+
 type YouTubeThumbnail = { url?: string };
 
 type YouTubeVideo = {
@@ -75,6 +104,103 @@ type ListResponse<T> = {
 	nextPageToken?: string;
 	error?: { message?: string };
 };
+
+function discoveryContext(): DiscoveryContext {
+	return {
+		metrics: {
+			youtubeRequests: 0,
+			cacheLookups: 0,
+			cacheHits: 0,
+			resultCount: 0,
+			warnings: 0
+		},
+		warnings: []
+	};
+}
+
+function addWarning(context: DiscoveryContext, warning: string) {
+	if (!context.warnings.includes(warning)) context.warnings.push(warning);
+	context.metrics.warnings = context.warnings.length;
+}
+
+function cacheTtl(event: EventData) {
+	if (event.ongoing) return 5 * 60 * 1000;
+	const end = event.end ? Date.parse(event.end) : NaN;
+	return Number.isFinite(end) && end > Date.now() - 2 * 24 * 60 * 60 * 1000
+		? VIDEO_CACHE_TTL
+		: 24 * 60 * 60 * 1000;
+}
+
+async function readEventVideoCache(event: EventData, allowStale = false) {
+	const [sync] = await db
+		.select({ syncedAt: eventVideoSync.syncedAt, warnings: eventVideoSync.warnings })
+		.from(eventVideoSync)
+		.where(eq(eventVideoSync.eventId, event.id));
+	if (!sync || (!allowStale && Date.now() - sync.syncedAt.getTime() >= cacheTtl(event)))
+		return null;
+
+	const rows = await db
+		.select({ data: eventVideo.data })
+		.from(eventVideo)
+		.where(eq(eventVideo.eventId, event.id));
+
+	return {
+		videos: rows.map((row) => row.data),
+		warnings: sync.warnings ?? []
+	};
+}
+
+async function writeEventVideoCache(eventId: number, result: EventVideoResult) {
+	const cachedAt = new Date();
+	await db.transaction(async (tx) => {
+		await tx.delete(eventVideo).where(eq(eventVideo.eventId, eventId));
+		if (result.videos.length > 0) {
+			await tx.insert(eventVideo).values(
+				result.videos.map((video) => ({
+					eventId,
+					videoId: video.videoId,
+					data: video,
+					cachedAt
+				}))
+			);
+		}
+		await tx
+			.insert(eventVideoSync)
+			.values({
+				eventId,
+				syncedAt: cachedAt,
+				resultCount: result.videos.length,
+				warnings: result.warnings
+			})
+			.onConflictDoUpdate({
+				target: eventVideoSync.eventId,
+				set: {
+					syncedAt: cachedAt,
+					resultCount: result.videos.length,
+					warnings: result.warnings
+				}
+			});
+	});
+}
+
+function recordDiscoveryTiming(
+	startedAt: number,
+	eventId: number,
+	metrics: DiscoveryMetrics,
+	cacheHit: boolean,
+	resultCount: number,
+	warnings: string[]
+) {
+	recordServerTiming('video.discovery', performance.now() - startedAt, {
+		eventId,
+		cacheHit,
+		youtubeRequests: metrics.youtubeRequests,
+		youtubeCacheHitRate: metrics.cacheLookups === 0 ? 0 : metrics.cacheHits / metrics.cacheLookups,
+		resultCount,
+		warningCount: warnings.length,
+		warnings: warnings.join(' | ')
+	});
+}
 
 function withScheme(value: string) {
 	const trimmed = value.trim();
@@ -166,22 +292,36 @@ export function parseYouTubeReference(value: string): YouTubeReference | null {
 	return null;
 }
 
-async function youtubeRequest<T>(path: string, params: Record<string, string>) {
+async function youtubeRequest<T>(
+	path: string,
+	params: Record<string, string>,
+	context?: DiscoveryContext
+) {
 	if (!YOUTUBE_API_KEY) {
 		throw new Error('youtube api key is not configured');
 	}
+	if (context && context.metrics.youtubeRequests >= MAX_YOUTUBE_REQUESTS) {
+		throw new YouTubeRequestBudgetExceeded();
+	}
+	if (context) context.metrics.youtubeRequests += 1;
 
 	const url = new URL(`${API_BASE_URL}/${path}`);
 	url.search = new URLSearchParams({ ...params, key: YOUTUBE_API_KEY }).toString();
 
-	const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-	const body = (await response.json()) as ListResponse<T>;
+	return measureExternalRequest(
+		`youtube.${path}`,
+		async () => {
+			const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+			const body = (await response.json()) as ListResponse<T>;
 
-	if (!response.ok) {
-		throw new Error(body.error?.message ?? `youtube request failed with ${response.status}`);
-	}
+			if (!response.ok) {
+				throw new Error(body.error?.message ?? `youtube request failed with ${response.status}`);
+			}
 
-	return body;
+			return body;
+		},
+		{ path }
+	);
 }
 
 function parseDuration(value?: string) {
@@ -244,17 +384,22 @@ export async function getYouTubeVideos(
 	videoIds: string[],
 	source: VideoSource,
 	sourceUrlByVideoId: Map<string, string>,
-	confidence: number
+	confidence: number,
+	context?: DiscoveryContext
 ) {
 	const uniqueIds = [...new Set(videoIds)].slice(0, 200);
 	const videos: EventVideo[] = [];
 
 	for (let index = 0; index < uniqueIds.length; index += 50) {
 		const ids = uniqueIds.slice(index, index + 50);
-		const response = await youtubeRequest<YouTubeVideo>('videos', {
-			part: 'snippet,contentDetails,status,liveStreamingDetails',
-			id: ids.join(',')
-		});
+		const response = await youtubeRequest<YouTubeVideo>(
+			'videos',
+			{
+				part: 'snippet,contentDetails,status,liveStreamingDetails',
+				id: ids.join(',')
+			},
+			context
+		);
 
 		for (const video of response.items ?? []) {
 			const hydrated = toEventVideo(
@@ -271,19 +416,23 @@ export async function getYouTubeVideos(
 	return videos;
 }
 
-export async function getPlaylistVideoIds(playlistId: string) {
+export async function getPlaylistVideoIds(playlistId: string, context?: DiscoveryContext) {
 	const videoIds: string[] = [];
 	let pageToken: string | undefined;
 
 	for (let page = 0; page < 4; page += 1) {
 		const response = await youtubeRequest<{
 			contentDetails?: { videoId?: string };
-		}>('playlistItems', {
-			part: 'contentDetails',
-			playlistId,
-			maxResults: '50',
-			...(pageToken ? { pageToken } : {})
-		});
+		}>(
+			'playlistItems',
+			{
+				part: 'contentDetails',
+				playlistId,
+				maxResults: '50',
+				...(pageToken ? { pageToken } : {})
+			},
+			context
+		);
 
 		for (const item of response.items ?? []) {
 			const id = item.contentDetails?.videoId;
@@ -298,7 +447,7 @@ export async function getPlaylistVideoIds(playlistId: string) {
 }
 
 /** turn a handle or legacy username into a channel id. `null` when the reference is not a channel. */
-export async function resolveChannelId(reference: YouTubeReference) {
+export async function resolveChannelId(reference: YouTubeReference, context?: DiscoveryContext) {
 	if (reference.kind !== 'channel') return null;
 	if (reference.id) return reference.id;
 
@@ -307,7 +456,7 @@ export async function resolveChannelId(reference: YouTubeReference) {
 	else if (reference.username) params.forUsername = reference.username;
 	else return null;
 
-	const response = await youtubeRequest<{ id?: string }>('channels', params);
+	const response = await youtubeRequest<{ id?: string }>('channels', params, context);
 
 	return response.items?.[0]?.id ?? null;
 }
@@ -325,12 +474,46 @@ export async function listChannelUploadIds({
 	channelId,
 	publishedAfter,
 	publishedBefore,
-	maxPages = 10
+	maxPages = MAX_CHANNEL_UPLOAD_PAGES,
+	context
 }: {
 	channelId: string;
 	publishedAfter: string;
 	publishedBefore: string;
 	maxPages?: number;
+	context?: DiscoveryContext;
+}) {
+	const requestKey = `${channelId}:${publishedAfter}:${publishedBefore}:${maxPages}`;
+	const pending = pendingChannelUploads.get(requestKey);
+	if (pending) return pending;
+
+	const request = listChannelUploadIdsUncoalesced({
+		channelId,
+		publishedAfter,
+		publishedBefore,
+		maxPages,
+		context
+	});
+	pendingChannelUploads.set(requestKey, request);
+	try {
+		return await request;
+	} finally {
+		if (pendingChannelUploads.get(requestKey) === request) pendingChannelUploads.delete(requestKey);
+	}
+}
+
+async function listChannelUploadIdsUncoalesced({
+	channelId,
+	publishedAfter,
+	publishedBefore,
+	maxPages,
+	context
+}: {
+	channelId: string;
+	publishedAfter: string;
+	publishedBefore: string;
+	maxPages: number;
+	context?: DiscoveryContext;
 }) {
 	// the uploads playlist of a channel is its id with the channel prefix swapped for the playlist one
 	if (!CHANNEL_ID_PATTERN.test(channelId)) return [];
@@ -344,12 +527,16 @@ export async function listChannelUploadIds({
 	for (let page = 0; page < maxPages; page += 1) {
 		const response = await youtubeRequest<{
 			contentDetails?: { videoId?: string; videoPublishedAt?: string };
-		}>('playlistItems', {
-			part: 'contentDetails',
-			playlistId,
-			maxResults: '50',
-			...(pageToken ? { pageToken } : {})
-		});
+		}>(
+			'playlistItems',
+			{
+				part: 'contentDetails',
+				playlistId,
+				maxResults: '50',
+				...(pageToken ? { pageToken } : {})
+			},
+			context
+		);
 
 		let passedWindow = false;
 
@@ -397,20 +584,26 @@ export function extractYouTubeUrls(html: string) {
 }
 
 async function fetchVexPage(url: string) {
-	const response = await fetch(url, {
-		headers: {
-			accept: 'text/html,application/xhtml+xml',
-			'user-agent': 'matcha event media indexer/1.0'
+	return measureExternalRequest(
+		'vex.webcast.page',
+		async () => {
+			const response = await fetch(url, {
+				headers: {
+					accept: 'text/html,application/xhtml+xml',
+					'user-agent': 'matcha event media indexer/1.0'
+				},
+				redirect: 'follow',
+				signal: AbortSignal.timeout(5_000)
+			});
+
+			if (!response.ok) {
+				throw new Error(`vex webcast page returned ${response.status}`);
+			}
+
+			return response.text();
 		},
-		redirect: 'follow',
-		signal: AbortSignal.timeout(5_000)
-	});
-
-	if (!response.ok) {
-		throw new Error(`vex webcast page returned ${response.status}`);
-	}
-
-	return response.text();
+		{ url }
+	);
 }
 
 /**
@@ -430,7 +623,7 @@ function sliceWebcastRow(html: string, sku: string) {
 }
 
 /** youtube urls named by the vex event page and the vex webcast index. */
-async function discoverVexReferences(event: EventData) {
+async function discoverVexReferences(event: EventData, context: DiscoveryContext) {
 	const sources = [
 		[`https://events.vex.com/${event.sku}.html`, 'event-page', 1],
 		['https://events.vex.com/webcasts?program=vex-robotics-competition', 'webcast-index', 0.98]
@@ -449,11 +642,12 @@ async function discoverVexReferences(event: EventData) {
 					references.push({ value, source, sourceUrl: url, confidence });
 				}
 			} catch {
-				warnings.push(
+				const warning =
 					source === 'event-page'
 						? 'the vex event page could not be read'
-						: 'the vex webcast index could not be read'
-				);
+						: 'the vex webcast index could not be read';
+				warnings.push(warning);
+				addWarning(context, warning);
 			}
 
 			return { references, warnings };
@@ -604,108 +798,244 @@ function dedupeVideos(videos: EventVideo[]) {
  * a source that fails becomes a warning rather than an error, so one dead page or a spent api quota
  * still leaves the rest of the results usable.
  */
-export async function discoverEventVideos(event: EventData): Promise<EventVideoResult> {
-	const { references, warnings } = await discoverVexReferences(event);
+function warningFor(error: unknown, fallback: string) {
+	return error instanceof YouTubeRequestBudgetExceeded
+		? 'youtube request budget reached'
+		: fallback;
+}
+
+function expectedStreamDays(event: EventData) {
+	const start = event.start ? Date.parse(event.start) : Date.now();
+	const end = event.end ? Date.parse(event.end) : start;
+	if (!Number.isFinite(start) || !Number.isFinite(end)) return 1;
+	return Math.max(1, Math.ceil((end - start) / (24 * 60 * 60 * 1000)) + 1);
+}
+
+function coveredStreamDays(
+	videos: EventVideo[],
+	event: EventData,
+	windows: ReturnType<typeof eventWindows>
+) {
+	return new Set(
+		videos
+			.filter(
+				(video) =>
+					isBroadcast(video) && withinUploadWindow(video, windows.uploadStart, windows.uploadEnd)
+			)
+			.map((video) => new Date(videoTime(video)).toISOString().slice(0, 10))
+	).size;
+}
+
+async function discoverEventVideosUncoalesced(
+	event: EventData,
+	context: DiscoveryContext
+): Promise<EventVideoResult> {
+	const { references } = await discoverVexReferences(event, context);
 	const windows = eventWindows(event);
 	const videos: EventVideo[] = [];
 	const directBySource = new Map<
 		VideoSource,
 		{ ids: string[]; urls: Map<string, string>; confidence: number }
 	>();
+	const playlistReferences: Array<{ id: string; reference: DiscoveredReference }> = [];
 	const channelReferences: DiscoveredReference[] = [];
+	const uniqueReferences = new Map<string, DiscoveredReference>();
 
 	for (const reference of references) {
 		const parsed = parseYouTubeReference(reference.value);
 		if (!parsed) continue;
+		const key = `${parsed.kind}:${parsed.kind === 'video' || parsed.kind === 'playlist' ? parsed.id : (parsed.id ?? parsed.handle ?? parsed.username ?? reference.value)}`;
+		const existing = uniqueReferences.get(key);
+		if (!existing || reference.confidence > existing.confidence)
+			uniqueReferences.set(key, reference);
+	}
 
+	for (const reference of uniqueReferences.values()) {
+		const parsed = parseYouTubeReference(reference.value);
+		if (!parsed) continue;
 		if (parsed.kind === 'video') {
 			const group = directBySource.get(reference.source) ?? {
 				ids: [],
 				urls: new Map<string, string>(),
 				confidence: reference.confidence
 			};
-			group.ids.push(parsed.id);
+			if (!group.urls.has(parsed.id)) group.ids.push(parsed.id);
 			group.urls.set(parsed.id, reference.sourceUrl);
 			directBySource.set(reference.source, group);
 		} else if (parsed.kind === 'playlist') {
-			try {
-				const ids = await getPlaylistVideoIds(parsed.id);
-				const urls = new Map(ids.map((id) => [id, reference.sourceUrl]));
-				videos.push(...(await getYouTubeVideos(ids, reference.source, urls, reference.confidence)));
-			} catch {
-				warnings.push('a referenced youtube playlist could not be read');
-			}
+			playlistReferences.push({ id: parsed.id, reference });
 		} else {
 			channelReferences.push(reference);
 		}
 	}
 
-	for (const [source, group] of directBySource) {
+	// Direct links are the most trusted and cheapest route to a usable player. Resolve event-page
+	// links before widening to the webcast index or channel uploads.
+	for (const source of ['event-page', 'webcast-index'] as VideoSource[]) {
+		const group = directBySource.get(source);
+		if (!group) continue;
 		try {
-			videos.push(...(await getYouTubeVideos(group.ids, source, group.urls, group.confidence)));
-		} catch {
-			warnings.push('a referenced youtube video could not be read');
-		}
-	}
-
-	const channelIds = new Map<string, DiscoveredReference>();
-	for (const reference of channelReferences) {
-		try {
-			const id = await resolveChannelId(parseYouTubeReference(reference.value)!);
-			if (id) channelIds.set(id, reference);
-		} catch {
-			warnings.push('a referenced youtube channel could not be resolved');
-		}
-	}
-
-	// the channel that broadcast one day of the event usually broadcast the rest, so it is worth
-	// searching. a channel that only posted a clip is a media channel and its uploads are not film.
-	for (const video of videos) {
-		if (channelIds.has(video.channelId) || !isBroadcast(video)) continue;
-
-		channelIds.set(video.channelId, {
-			value: video.url,
-			source: video.source,
-			sourceUrl: `https://www.youtube.com/channel/${video.channelId}`,
-			confidence: Math.min(video.confidence, 0.92)
-		});
-	}
-
-	for (const [channelId, reference] of [...channelIds].slice(0, MAX_CHANNELS)) {
-		try {
-			const ids = await listChannelUploadIds({
-				channelId,
-				publishedAfter: windows.publishedAfter,
-				publishedBefore: windows.publishedBefore
-			});
-			const urls = new Map(ids.map((id) => [id, reference.sourceUrl]));
-			const discovered = await getYouTubeVideos(
-				ids,
-				'youtube-channel',
-				urls,
-				Math.min(reference.confidence, 0.92)
-			);
-
 			videos.push(
-				...discovered.filter(
-					(video) =>
-						isBroadcast(video) &&
-						matchesEventProgram(video.title, event) &&
-						(overlapsEvent(video, windows.overlapStart, windows.overlapEnd) ||
-							titleScore(video.title, event) >= 0.25)
-				)
+				...(await getYouTubeVideos(group.ids, source, group.urls, group.confidence, context))
 			);
-		} catch {
-			warnings.push('additional videos from a referenced youtube channel could not be searched');
+		} catch (error) {
+			addWarning(context, warningFor(error, 'a referenced youtube video could not be read'));
 		}
 	}
 
-	// the window is applied here rather than per source so a stale event-page link still gets its
-	// channel searched above, without the stale video itself being served as this event's film
+	for (const { id, reference } of playlistReferences) {
+		try {
+			const ids = await getPlaylistVideoIds(id, context);
+			const urls = new Map(ids.map((videoId) => [videoId, reference.sourceUrl]));
+			videos.push(
+				...(await getYouTubeVideos(ids, reference.source, urls, reference.confidence, context))
+			);
+		} catch (error) {
+			addWarning(context, warningFor(error, 'a referenced youtube playlist could not be read'));
+		}
+	}
+
+	// A one-day event with a direct broadcast is already usable. Channel expansion is reserved for
+	// missing direct film or multi-day coverage, which keeps both quota and latency predictable.
+	const needsChannelExpansion =
+		coveredStreamDays(videos, event, windows) < expectedStreamDays(event);
+	if (needsChannelExpansion) {
+		const channelIds = new Map<string, DiscoveredReference>();
+		for (const reference of channelReferences) {
+			try {
+				const id = await resolveChannelId(parseYouTubeReference(reference.value)!, context);
+				if (id) channelIds.set(id, reference);
+			} catch (error) {
+				addWarning(
+					context,
+					warningFor(error, 'a referenced youtube channel could not be resolved')
+				);
+			}
+		}
+
+		// the channel that broadcast one day of the event usually broadcast the rest, so it is worth
+		// searching. a channel that only posted a clip is a media channel and its uploads are not film.
+		for (const video of videos) {
+			if (channelIds.has(video.channelId) || !isBroadcast(video)) continue;
+
+			channelIds.set(video.channelId, {
+				value: video.url,
+				source: video.source,
+				sourceUrl: `https://www.youtube.com/channel/${video.channelId}`,
+				confidence: Math.min(video.confidence, 0.92)
+			});
+		}
+
+		for (const [channelId, reference] of [...channelIds].slice(0, MAX_CHANNELS)) {
+			try {
+				const ids = await listChannelUploadIds({
+					channelId,
+					publishedAfter: windows.publishedAfter,
+					publishedBefore: windows.publishedBefore,
+					context
+				});
+				const urls = new Map(ids.map((id) => [id, reference.sourceUrl]));
+				const discovered = await getYouTubeVideos(
+					ids,
+					'youtube-channel',
+					urls,
+					Math.min(reference.confidence, 0.92),
+					context
+				);
+
+				videos.push(
+					...discovered.filter(
+						(video) =>
+							isBroadcast(video) &&
+							matchesEventProgram(video.title, event) &&
+							(overlapsEvent(video, windows.overlapStart, windows.overlapEnd) ||
+								titleScore(video.title, event) >= 0.25)
+					)
+				);
+			} catch (error) {
+				addWarning(
+					context,
+					warningFor(
+						error,
+						'additional videos from a referenced youtube channel could not be searched'
+					)
+				);
+			}
+		}
+	}
+
 	return {
 		videos: dedupeVideos(videos).filter((video) =>
 			withinUploadWindow(video, windows.uploadStart, windows.uploadEnd)
 		),
-		warnings: [...new Set(warnings)]
+		warnings: [...new Set(context.warnings)]
 	};
+}
+
+/** Discover event film with persistent empty/partial-result caching and in-flight coalescing. */
+export async function discoverEventVideos(event: EventData): Promise<EventVideoResult> {
+	const startedAt = performance.now();
+	const context = discoveryContext();
+	context.metrics.cacheLookups = 1;
+	const cached = await readEventVideoCache(event);
+	if (cached) {
+		context.metrics.cacheHits = 1;
+		context.metrics.resultCount = cached.videos.length;
+		context.warnings.push(...cached.warnings);
+		recordDiscoveryTiming(
+			startedAt,
+			event.id,
+			context.metrics,
+			true,
+			cached.videos.length,
+			cached.warnings
+		);
+		return cached;
+	}
+
+	const pending = pendingEventDiscoveries.get(event.id);
+	if (pending) return pending;
+
+	const request = (async () => {
+		try {
+			const result = await discoverEventVideosUncoalesced(event, context);
+			context.metrics.resultCount = result.videos.length;
+			await writeEventVideoCache(event.id, result);
+			recordDiscoveryTiming(
+				startedAt,
+				event.id,
+				context.metrics,
+				false,
+				result.videos.length,
+				result.warnings
+			);
+			return result;
+		} catch (error) {
+			const stale = await readEventVideoCache(event, true);
+			if (stale) {
+				const warnings = [
+					...new Set([...stale.warnings, 'stale video discovery results are being used'])
+				];
+				context.metrics.resultCount = stale.videos.length;
+				recordDiscoveryTiming(
+					startedAt,
+					event.id,
+					context.metrics,
+					false,
+					stale.videos.length,
+					warnings
+				);
+				return { videos: stale.videos, warnings };
+			}
+			recordDiscoveryTiming(startedAt, event.id, context.metrics, false, 0, [String(error)]);
+			throw error;
+		}
+	})();
+
+	pendingEventDiscoveries.set(event.id, request);
+	try {
+		return await request;
+	} finally {
+		if (pendingEventDiscoveries.get(event.id) === request) pendingEventDiscoveries.delete(event.id);
+	}
 }

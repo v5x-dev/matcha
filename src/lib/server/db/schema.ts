@@ -1,5 +1,6 @@
 import type { EventData, MatchData } from 'events.vex';
 import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import type { EventVideo } from '../youtube';
 
 export const task = sqliteTable('task', {
 	id: text('id')
@@ -25,6 +26,10 @@ export const event = sqliteTable(
 		programId: integer('program_id').notNull(),
 		level: text('level').$type<EventData['level']>(),
 		eventType: text('event_type').$type<EventData['event_type']>(),
+		locationVenue: text('location_venue').notNull().default(''),
+		locationCity: text('location_city').notNull().default(''),
+		locationRegion: text('location_region').notNull().default(''),
+		searchText: text('search_text').notNull().default(''),
 		ongoing: integer('ongoing', { mode: 'boolean' }).notNull().default(false),
 		data: text('data', { mode: 'json' }).$type<EventData>().notNull(),
 		cachedAt: integer('cached_at', { mode: 'timestamp_ms' }).notNull(),
@@ -35,7 +40,12 @@ export const event = sqliteTable(
 		 */
 		listedAt: integer('listed_at', { mode: 'timestamp_ms' })
 	},
-	(t) => [index('event_season_idx').on(t.seasonId, t.listedAt)]
+	(t) => [
+		index('event_season_idx').on(t.seasonId, t.listedAt),
+		index('event_search_idx').on(t.seasonId, t.start, t.id),
+		index('event_level_idx').on(t.seasonId, t.level),
+		index('event_region_idx').on(t.seasonId, t.locationRegion)
+	]
 );
 
 /** Cached matches, scoped to the event they were fetched for. */
@@ -109,4 +119,26 @@ export const eventPlaybackOffset = sqliteTable(
 export const cacheSync = sqliteTable('cache_sync', {
 	key: text('key').primaryKey(),
 	syncedAt: integer('synced_at', { mode: 'timestamp_ms' }).notNull()
+});
+
+/** Persisted discovery output. A sync row below makes an empty or partial result cacheable too. */
+export const eventVideo = sqliteTable(
+	'event_video',
+	{
+		eventId: integer('event_id').notNull(),
+		videoId: text('video_id').notNull(),
+		data: text('data', { mode: 'json' }).$type<EventVideo>().notNull(),
+		cachedAt: integer('cached_at', { mode: 'timestamp_ms' }).notNull()
+	},
+	(t) => [
+		primaryKey({ columns: [t.eventId, t.videoId] }),
+		index('event_video_event_idx').on(t.eventId, t.cachedAt)
+	]
+);
+
+export const eventVideoSync = sqliteTable('event_video_sync', {
+	eventId: integer('event_id').primaryKey(),
+	syncedAt: integer('synced_at', { mode: 'timestamp_ms' }).notNull(),
+	resultCount: integer('result_count').notNull().default(0),
+	warnings: text('warnings', { mode: 'json' }).$type<string[]>().notNull().default([])
 });
