@@ -191,7 +191,7 @@
 	>
 		<div class="relative w-full shrink-0" style="height: {$virtualizer.getTotalSize()}px;">
 			{#if stickyHeading}
-				<Sidebar.GroupLabel class="sticky top-0 z-20 bg-sidebar">
+				<Sidebar.GroupLabel class="sticky top-0 z-20 rounded-none bg-sidebar">
 					{stickyHeading.label}
 				</Sidebar.GroupLabel>
 			{/if}
@@ -205,8 +205,7 @@
 						use:measureRow
 					>
 						{#if row.type === 'heading'}
-							<Sidebar.GroupLabel
-								class={virtualRow.index === stickyHeadingIndex ? 'invisible' : ''}
+							<Sidebar.GroupLabel class={virtualRow.index === stickyHeadingIndex ? 'invisible' : ''}
 								>{row.label}</Sidebar.GroupLabel
 							>
 						{:else}
