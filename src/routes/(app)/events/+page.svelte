@@ -37,6 +37,7 @@
 	let isLoadingMore = $state(false);
 	let requestSequence = 0;
 	let loadMoreSequence = 0;
+	let resultRevision = $state(0);
 	let requestTimer: ReturnType<typeof setTimeout> | undefined;
 	let skipInitialRequest = true;
 	let firstUsableListMeasured = false;
@@ -77,12 +78,15 @@
 			void searchEvents(input)
 				.then((next) => {
 					if (sequence !== requestSequence) return;
+					resultRevision += 1;
 					result = next;
 					finishBrowserMetric(metric, { resultCount: next.total });
 				})
 				.catch(() => {
-					if (sequence === requestSequence)
+					if (sequence === requestSequence) {
+						resultRevision += 1;
 						result = { ...currentResult, events: [], total: 0, nextCursor: null };
+					}
 				})
 				.finally(() => {
 					if (sequence !== requestSequence) return;
@@ -243,7 +247,7 @@
 		bind:this={viewportRef}
 	>
 		<div class="relative w-full" style="height: {$virtualizer.getTotalSize()}px;">
-			{#each $virtualizer.getVirtualItems() as row (events[row.index]?.id ?? row.key)}
+			{#each $virtualizer.getVirtualItems() as row (`${events[row.index]?.id ?? row.key}:${resultRevision}`)}
 				{@const event = events[row.index]}
 				{#if event}
 					{@const location = formatLocation(event)}
