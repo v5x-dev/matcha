@@ -1,6 +1,5 @@
 <script lang="ts">
 	import type { EventListItem, EventSearchInput, EventSearchResult } from '$lib/event-types';
-	import { createVirtualizer } from '@tanstack/svelte-virtual';
 	import * as Item from '$lib/components/ui/item';
 	import * as InputGroup from '$lib/components/ui/input-group';
 	import { resolve } from '$app/paths';
@@ -17,7 +16,6 @@
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import XIcon from '@lucide/svelte/icons/x';
 	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
-	import { watch } from 'runed';
 	import { onMount } from 'svelte';
 
 	const rangeFormatter = new Intl.DateTimeFormat('en-US', {
@@ -37,16 +35,9 @@
 	let isLoadingMore = $state(false);
 	let requestSequence = 0;
 	let loadMoreSequence = 0;
-	let resultRevision = $state(0);
 	let requestTimer: ReturnType<typeof setTimeout> | undefined;
 	let skipInitialRequest = true;
 	let firstUsableListMeasured = false;
-
-	function waitForLayout() {
-		return new Promise<void>((resolve) => {
-			requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-		});
-	}
 
 	function searchInput(cursor: string | null = null): EventSearchInput {
 		return {
@@ -78,21 +69,16 @@
 			void searchEvents(input)
 				.then((next) => {
 					if (sequence !== requestSequence) return;
-					resultRevision += 1;
 					result = next;
 					finishBrowserMetric(metric, { resultCount: next.total });
 				})
 				.catch(() => {
 					if (sequence === requestSequence) {
-						resultRevision += 1;
 						result = { ...currentResult, events: [], total: 0, nextCursor: null };
 					}
 				})
 				.finally(() => {
-					if (sequence !== requestSequence) return;
-					void waitForLayout().then(() => {
-						if (sequence === requestSequence) isLoading = false;
-					});
+					if (sequence === requestSequence) isLoading = false;
 				});
 		}, 180);
 
@@ -152,43 +138,6 @@
 		return () => observer.disconnect();
 	});
 
-	const virtualizer = createVirtualizer<HTMLElement, HTMLDivElement>({
-		count: 0,
-		getScrollElement: () => viewportRef,
-		getItemKey: (index) => events[index]?.id ?? index,
-		estimateSize: () => 78,
-		overscan: 4,
-		paddingEnd: 8,
-		measureElement: (element, entry) => {
-			const box = entry?.borderBoxSize?.[0];
-			return box ? box.blockSize : element.getBoundingClientRect().height;
-		},
-		// defer row measurements so dynamic heights do not update the layout from
-		// inside the ResizeObserver callback and trigger a browser loop error.
-		useAnimationFrameWithResizeObserver: true
-	});
-
-	// pre so the row count shrinks before the list re-renders, otherwise virtual rows
-	// briefly point past the end of a freshly filtered list.
-	watch.pre([() => events.length, () => viewportRef], () => {
-		$virtualizer.setOptions({
-			count: events.length,
-			getScrollElement: () => viewportRef
-		});
-	});
-
-	watch(
-		() => [filters.query, filters.levels, filters.regions, filters.timeframe, events.length],
-		() => {
-			$virtualizer.measure();
-			viewportRef?.scrollTo({ top: 0 });
-		}
-	);
-
-	function measureRow(node: HTMLDivElement) {
-		$virtualizer.measureElement(node);
-	}
-
 	function formatRange(start?: string, end?: string): string {
 		if (!start) return 'date tbd';
 		return rangeFormatter.formatRange(new Date(start), new Date(end ?? start)).toLowerCase();
@@ -246,44 +195,33 @@
 		class={['mr-2 min-h-0 flex-1 overflow-y-auto', isLoading && 'invisible']}
 		bind:this={viewportRef}
 	>
-		<div class="relative w-full" style="height: {$virtualizer.getTotalSize()}px;">
-			{#each $virtualizer.getVirtualItems() as row (`${events[row.index]?.id ?? row.key}:${resultRevision}`)}
-				{@const event = events[row.index]}
-				{#if event}
-					{@const location = formatLocation(event)}
-					<div
-						class={[
-							'absolute top-0 left-0 w-full pr-4 pl-2',
-							row.index < events.length - 1 && 'pb-2'
-						]}
-						style="transform: translateY({row.start}px);"
-						data-index={row.index}
-						use:measureRow
-					>
-						<Item.Root variant="outline">
-							<Item.Content>
-								<Item.Title
-									><a
-										class="hover:underline"
-										href={resolve('/(app)/events/[eventId]', { eventId: event.id.toString() })}
-									>
-										{event.name.toLowerCase()}
-									</a>
-								</Item.Title>
-								<Item.Description class="flex min-w-0 items-center gap-2">
-									<span class="shrink-0">{formatRange(event.start, event.end)}</span>
-									{#if location}
-										<span aria-hidden="true">·</span>
-										<span class="truncate">{location}</span>
-									{/if}
-									{#if event.ongoing}
-										<Badge variant="secondary" class="ml-auto h-5 px-1.5 text-[10px]">live</Badge>
-									{/if}
-								</Item.Description>
-							</Item.Content>
-						</Item.Root>
-					</div>
-				{/if}
+		<div class="space-y-2 pr-4 pl-2">
+			{#each events as event (event.id)}
+				{@const location = formatLocation(event)}
+				<div class="w-full" data-event-id={event.id}>
+					<Item.Root variant="outline">
+						<Item.Content>
+							<Item.Title
+								><a
+									class="hover:underline"
+									href={resolve('/(app)/events/[eventId]', { eventId: event.id.toString() })}
+								>
+									{event.name.toLowerCase()}
+								</a>
+							</Item.Title>
+							<Item.Description class="flex min-w-0 items-center gap-2">
+								<span class="shrink-0">{formatRange(event.start, event.end)}</span>
+								{#if location}
+									<span aria-hidden="true">·</span>
+									<span class="truncate">{location}</span>
+								{/if}
+								{#if event.ongoing}
+									<Badge variant="secondary" class="ml-auto h-5 px-1.5 text-[10px]">live</Badge>
+								{/if}
+							</Item.Description>
+						</Item.Content>
+					</Item.Root>
+				</div>
 			{/each}
 		</div>
 		{#if events.length === 0}
