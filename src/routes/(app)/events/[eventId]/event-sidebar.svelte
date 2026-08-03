@@ -87,6 +87,37 @@
 		])
 	);
 
+	let stickyHeadingIndex = $state<number | null>(null);
+
+	function updateStickyHeading(instance: {
+		scrollOffset: number | null;
+		getVirtualItemForOffset: (offset: number) => { index: number } | null | undefined;
+	}) {
+		if (rows.length === 0) {
+			stickyHeadingIndex = null;
+			return;
+		}
+
+		const currentIndex = Math.min(
+			instance.getVirtualItemForOffset(instance.scrollOffset ?? 0)?.index ?? 0,
+			rows.length - 1
+		);
+		for (let index = currentIndex; index >= 0; index -= 1) {
+			if (rows[index]?.type === 'heading') {
+				stickyHeadingIndex = index;
+				return;
+			}
+		}
+
+		stickyHeadingIndex = null;
+	}
+
+	const stickyHeading = $derived.by(() => {
+		if (stickyHeadingIndex === null) return null;
+		const row = rows[stickyHeadingIndex];
+		return row?.type === 'heading' ? row : null;
+	});
+
 	let viewportRef = $state<HTMLElement | null>(null);
 	const virtualizer = createVirtualizer<HTMLElement, HTMLDivElement>({
 		count: 0,
@@ -95,11 +126,13 @@
 		overscan: 8,
 		paddingEnd: 8,
 		gap: 2,
-		useAnimationFrameWithResizeObserver: true
+		useAnimationFrameWithResizeObserver: true,
+		onChange: (instance) => updateStickyHeading(instance)
 	});
 
 	watch.pre([() => rows.length, () => viewportRef], () => {
 		$virtualizer.setOptions({ count: rows.length, getScrollElement: () => viewportRef });
+		updateStickyHeading($virtualizer);
 	});
 
 	$effect(() => {
@@ -146,7 +179,7 @@
 				>
 			{/snippet}
 		</Sidebar.MenuButton>
-		<p class="px-2 text-sm leading-5 font-medium text-sidebar-foreground">
+		<p class="px-2 text-sm leading-5 font-medium text-muted-foreground">
 			{event.name.split(':')[0].toLowerCase()}
 		</p>
 	</Sidebar.Header>
@@ -157,6 +190,11 @@
 		style="overflow-y: scroll;"
 	>
 		<div class="relative w-full shrink-0" style="height: {$virtualizer.getTotalSize()}px;">
+			{#if stickyHeading}
+				<Sidebar.GroupLabel class="sticky top-0 z-20 bg-sidebar">
+					{stickyHeading.label}
+				</Sidebar.GroupLabel>
+			{/if}
 			{#each $virtualizer.getVirtualItems() as virtualRow (virtualRow.key)}
 				{@const row = rows[virtualRow.index]}
 				{#if row}
@@ -167,11 +205,10 @@
 						use:measureRow
 					>
 						{#if row.type === 'heading'}
-							<div
-								class="flex h-9 items-center rounded-none bg-sidebar px-1 text-[0.7rem] tracking-wide text-sidebar-foreground"
+							<Sidebar.GroupLabel
+								class={virtualRow.index === stickyHeadingIndex ? 'invisible' : ''}
+								>{row.label}</Sidebar.GroupLabel
 							>
-								<span>{row.label}</span>
-							</div>
 						{:else}
 							<Sidebar.MenuButton
 								class="h-8 items-center gap-2 px-3 py-2 transition-colors duration-150 data-active:h-auto data-active:bg-sidebar-accent data-active:py-2.5"
