@@ -3,7 +3,6 @@
 	import { createVirtualizer } from '@tanstack/svelte-virtual';
 	import * as Item from '$lib/components/ui/item';
 	import * as InputGroup from '$lib/components/ui/input-group';
-	import { Button } from '$lib/components/ui/button';
 	import { resolve } from '$app/paths';
 	import { searchEvents } from '$lib/remote/event.remote';
 	import {
@@ -37,9 +36,16 @@
 	let isLoading = $state(false);
 	let isLoadingMore = $state(false);
 	let requestSequence = 0;
+	let loadMoreSequence = 0;
 	let requestTimer: ReturnType<typeof setTimeout> | undefined;
 	let skipInitialRequest = true;
 	let firstUsableListMeasured = false;
+
+	function waitForLayout() {
+		return new Promise<void>((resolve) => {
+			requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+		});
+	}
 
 	function searchInput(cursor: string | null = null): EventSearchInput {
 		return {
@@ -79,7 +85,10 @@
 						result = { ...currentResult, events: [], total: 0, nextCursor: null };
 				})
 				.finally(() => {
-					if (sequence === requestSequence) isLoading = false;
+					if (sequence !== requestSequence) return;
+					void waitForLayout().then(() => {
+						if (sequence === requestSequence) isLoading = false;
+					});
 				});
 		}, 180);
 
@@ -89,8 +98,9 @@
 	});
 
 	async function loadMoreEvents() {
-		if (!currentResult.nextCursor || isLoadingMore) return;
+		if (isLoading || !currentResult.nextCursor || isLoadingMore) return;
 		const sequence = ++requestSequence;
+		const loadSequence = ++loadMoreSequence;
 		isLoadingMore = true;
 		try {
 			const next = await searchEvents(searchInput(currentResult.nextCursor));
@@ -100,7 +110,7 @@
 				events: [...currentResult.events, ...next.events]
 			};
 		} finally {
-			if (sequence === requestSequence) isLoadingMore = false;
+			if (loadSequence === loadMoreSequence) isLoadingMore = false;
 		}
 	}
 
@@ -120,13 +130,35 @@
 	});
 
 	let viewportRef = $state<HTMLElement | null>(null);
+	let loadMoreSentinel = $state<HTMLDivElement | null>(null);
+
+	$effect(() => {
+		const sentinel = loadMoreSentinel;
+		const viewport = viewportRef;
+		if (!sentinel || !viewport) return;
+
+		const observer = new IntersectionObserver(
+			([entry]) => {
+				if (entry?.isIntersecting) void loadMoreEvents();
+			},
+			{ root: viewport, rootMargin: '0px 0px 320px' }
+		);
+		observer.observe(sentinel);
+
+		return () => observer.disconnect();
+	});
 
 	const virtualizer = createVirtualizer<HTMLElement, HTMLDivElement>({
 		count: 0,
 		getScrollElement: () => viewportRef,
+		getItemKey: (index) => events[index]?.id ?? index,
 		estimateSize: () => 78,
 		overscan: 4,
 		paddingEnd: 8,
+		measureElement: (element, entry) => {
+			const box = entry?.borderBoxSize?.[0];
+			return box ? box.blockSize : element.getBoundingClientRect().height;
+		},
 		// defer row measurements so dynamic heights do not update the layout from
 		// inside the ResizeObserver callback and trigger a browser loop error.
 		useAnimationFrameWithResizeObserver: true
@@ -206,7 +238,10 @@
 		{/if}
 	</div>
 
-	<div class="mr-2 min-h-0 flex-1 overflow-y-auto" bind:this={viewportRef}>
+	<div
+		class={['mr-2 min-h-0 flex-1 overflow-y-auto', isLoading && 'invisible']}
+		bind:this={viewportRef}
+	>
 		<div class="relative w-full" style="height: {$virtualizer.getTotalSize()}px;">
 			{#each $virtualizer.getVirtualItems() as row (events[row.index]?.id ?? row.key)}
 				{@const event = events[row.index]}
@@ -251,17 +286,12 @@
 			<p class="px-2 py-6 text-center text-sm text-muted-foreground">no events found</p>
 		{/if}
 		{#if currentResult.nextCursor}
-			<div class="px-2 pb-2">
-				<Button
-					variant="outline"
-					class="w-full"
-					disabled={isLoadingMore}
-					onclick={() => void loadMoreEvents()}
-					data-testid="load-more-events"
-				>
-					{isLoadingMore ? 'loading more events...' : 'load more events'}
-				</Button>
-			</div>
+			<div bind:this={loadMoreSentinel} class="h-1" aria-hidden="true"></div>
+			{#if isLoadingMore}
+				<p class="px-2 py-2 text-center text-xs text-muted-foreground" aria-live="polite">
+					loading...
+				</p>
+			{/if}
 		{/if}
 	</div>
 </div>
