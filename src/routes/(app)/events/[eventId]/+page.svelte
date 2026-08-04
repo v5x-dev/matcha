@@ -4,6 +4,7 @@
 	import { orderedEventMatches } from '$lib/match-navigation';
 	import { Button } from '$lib/components/ui/button';
 	import * as Popover from '$lib/components/ui/popover';
+	import { useSidebar } from '$lib/components/ui/sidebar';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import YoutubeIcon from '$lib/components/youtube-icon.svelte';
 	import {
@@ -24,6 +25,7 @@
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
+	import PanelRightIcon from '@lucide/svelte/icons/panel-right';
 	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
 	import TimerResetIcon from '@lucide/svelte/icons/timer-reset';
 	import Volume2Icon from '@lucide/svelte/icons/volume-2';
@@ -37,6 +39,8 @@
 	type MatchWindow = { startSeconds: number; endSeconds: number };
 
 	const { params, data } = $props();
+
+	const sidebar = useSidebar();
 
 	const eventId = $derived(Number(params.eventId));
 	const event = $derived(data.event);
@@ -632,6 +636,16 @@
 		</div>
 
 		<div class="order-4 ml-auto flex shrink-0 items-center gap-0.5">
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				class="md:hidden"
+				onclick={() => sidebar.toggle()}
+				aria-label="toggle matches"
+			>
+				<PanelRightIcon />
+			</Button>
+
 			<Tooltip.Root>
 				<Tooltip.Trigger>
 					{#snippet child({ props })}
