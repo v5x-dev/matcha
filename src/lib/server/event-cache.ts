@@ -6,6 +6,7 @@ import type {
 	EventSearchInput,
 	EventSearchResult
 } from '$lib/event-types';
+import { toEventListItem } from '$lib/event-types';
 import { db } from './db';
 import { cacheSync, event, match } from './db/schema';
 import { measureExternalRequest, measureServer } from './instrumentation';
@@ -36,6 +37,8 @@ const matchMemoryCache = new Map<number, { data: MatchData[]; syncedAt: number }
 const pendingEventRequests = new Map<number, Promise<EventData | null>>();
 const pendingMatchRequests = new Map<number, Promise<MatchData[] | null>>();
 let pendingEventListRequest: Promise<void> | null = null;
+let fallbackEventList: { events: EventData[]; fetchedAt: number } | null = null;
+let eventDatabaseUnavailableUntil = 0;
 
 function boundedGet<K, V>(cache: Map<K, V>, key: K): V | undefined {
 	const value = cache.get(key);
@@ -275,6 +278,101 @@ function searchTerms(value: string): string[] {
 		.slice(0, 8);
 }
 
+async function searchEventsWithoutDatabase(input: EventSearchInput): Promise<EventSearchResult> {
+	if (!fallbackEventList || Date.now() - fallbackEventList.fetchedAt >= EVENT_LIST_TTL) {
+		const { data, error, response } = await measureExternalRequest(
+			'vex.events.search',
+			() =>
+				vex.events.search({
+					'season[]': [SEASON],
+					'eventTypes[]': ['tournament']
+				}),
+			{ season: SEASON, eventType: 'tournament', databaseFallback: true }
+		);
+		if (!data)
+			throw new Error(`event search failed (${response.status}): ${JSON.stringify(error)}`);
+		fallbackEventList = { events: data.map((item) => item.getData()), fetchedAt: Date.now() };
+	}
+
+	const terms = searchTerms(input.query);
+	const now = Date.now();
+	const matches = (item: EventData, without?: 'levels' | 'regions') => {
+		const haystack = [
+			item.name,
+			item.sku,
+			item.location.venue,
+			item.location.city,
+			item.location.region
+		]
+			.filter(Boolean)
+			.join(' ')
+			.toLowerCase();
+		if (terms.some((term) => !haystack.includes(term))) return false;
+		if (
+			without !== 'levels' &&
+			input.levels.length &&
+			(!item.level || !input.levels.includes(item.level))
+		)
+			return false;
+		if (
+			without !== 'regions' &&
+			input.regions.length &&
+			!input.regions.includes(item.location.region ?? '')
+		)
+			return false;
+		const start = item.start ? Date.parse(item.start) : NaN;
+		const end = item.end ? Date.parse(item.end) : start;
+		if (input.timeframe === 'upcoming' && !(start > now)) return false;
+		if (input.timeframe === 'ongoing' && !(start <= now && end >= now)) return false;
+		if (input.timeframe === 'past' && !(end < now)) return false;
+		return true;
+	};
+	const facet = (values: Array<string | undefined>) =>
+		[
+			...values.reduce((counts, value) => {
+				if (value) counts.set(value, (counts.get(value) ?? 0) + 1);
+				return counts;
+			}, new Map<string, number>())
+		]
+			.map(([value, count]) => ({ value, count }))
+			.sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+	const filtered = fallbackEventList.events
+		.filter((item) => matches(item))
+		.sort(
+			(a, b) =>
+				(a.start ?? NULL_EVENT_SORT).localeCompare(b.start ?? NULL_EVENT_SORT) || a.id - b.id
+		);
+	const cursor = decodeCursor(input.cursor);
+	const afterCursor = cursor
+		? filtered.filter((item) => {
+				const start = item.start ?? NULL_EVENT_SORT;
+				return start > cursor.start || (start === cursor.start && item.id > cursor.id);
+			})
+		: filtered;
+	const limit = Math.max(1, Math.min(input.limit ?? INITIAL_EVENT_PAGE_SIZE, MAX_EVENT_PAGE_SIZE));
+	const page = afterCursor.slice(0, limit);
+	const last = page.at(-1);
+
+	return {
+		events: page.map(toEventListItem),
+		total: filtered.length,
+		nextCursor:
+			afterCursor.length > limit && last
+				? encodeCursor({ start: last.start ?? NULL_EVENT_SORT, id: last.id })
+				: null,
+		facets: {
+			levels: facet(
+				fallbackEventList.events.filter((item) => matches(item, 'levels')).map((item) => item.level)
+			),
+			regions: facet(
+				fallbackEventList.events
+					.filter((item) => matches(item, 'regions'))
+					.map((item) => item.location.region)
+			)
+		}
+	};
+}
+
 function eventWhere(input: EventSearchInput, without?: 'levels' | 'regions') {
 	const conditions = [eq(event.seasonId, SEASON), isNotNull(event.listedAt)];
 
@@ -377,7 +475,14 @@ export async function searchEvents(input: EventSearchInput): Promise<EventSearch
 	return measureServer(
 		'event.search',
 		async () => {
-			await ensureEventListing();
+			if (Date.now() < eventDatabaseUnavailableUntil) return searchEventsWithoutDatabase(input);
+			try {
+				await ensureEventListing();
+			} catch (error) {
+				eventDatabaseUnavailableUntil = Date.now() + MINUTE;
+				console.error('event database unavailable; using the upstream event index', error);
+				return searchEventsWithoutDatabase(input);
+			}
 			const limit = Math.max(
 				1,
 				Math.min(input.limit ?? INITIAL_EVENT_PAGE_SIZE, MAX_EVENT_PAGE_SIZE)
