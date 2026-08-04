@@ -13,6 +13,8 @@ const MAX_CHANNELS = 6;
 const MAX_YOUTUBE_REQUESTS = 20;
 const MAX_CHANNEL_UPLOAD_PAGES = 6;
 const VIDEO_CACHE_TTL = 15 * 60 * 1000;
+/** a cache miss is cheaper than making the player wait on an unhealthy remote database. */
+const VIDEO_CACHE_TIMEOUT_MS = 1_000;
 /** a field broadcast runs for hours; anything shorter is a clip, a short, or a highlights reel. */
 const MIN_BROADCAST_SECONDS = 20 * 60;
 
@@ -77,6 +79,23 @@ class YouTubeRequestBudgetExceeded extends Error {
 const pendingEventDiscoveries = new Map<number, Promise<EventVideoResult>>();
 const pendingChannelUploads = new Map<string, Promise<string[]>>();
 
+async function withVideoCacheTimeout<T>(operation: Promise<T>) {
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			operation,
+			new Promise<never>((_, reject) => {
+				timeout = setTimeout(
+					() => reject(new Error('video cache operation timed out')),
+					VIDEO_CACHE_TIMEOUT_MS
+				);
+			})
+		]);
+	} finally {
+		if (timeout) clearTimeout(timeout);
+	}
+}
+
 type YouTubeThumbnail = { url?: string };
 
 type YouTubeVideo = {
@@ -132,37 +151,40 @@ function cacheTtl(event: EventData) {
 }
 
 async function readEventVideoCache(event: EventData, allowStale = false) {
-	let sync: { syncedAt: Date; resultCount: number; warnings: string[] } | undefined;
 	try {
-		[sync] = await db
-			.select({
-				syncedAt: eventVideoSync.syncedAt,
-				resultCount: eventVideoSync.resultCount,
-				warnings: eventVideoSync.warnings
-			})
-			.from(eventVideoSync)
-			.where(eq(eventVideoSync.eventId, event.id));
+		return await withVideoCacheTimeout(
+			(async () => {
+				const [sync] = await db
+					.select({
+						syncedAt: eventVideoSync.syncedAt,
+						resultCount: eventVideoSync.resultCount,
+						warnings: eventVideoSync.warnings
+					})
+					.from(eventVideoSync)
+					.where(eq(eventVideoSync.eventId, event.id));
+				const failedWithoutVideos = sync?.resultCount === 0 && sync.warnings.length > 0;
+				if (
+					!sync ||
+					(!allowStale &&
+						(failedWithoutVideos || Date.now() - sync.syncedAt.getTime() >= cacheTtl(event)))
+				)
+					return null;
+
+				const rows = await db
+					.select({ data: eventVideo.data })
+					.from(eventVideo)
+					.where(eq(eventVideo.eventId, event.id));
+
+				return {
+					videos: rows.map((row) => row.data),
+					warnings: sync.warnings ?? []
+				};
+			})()
+		);
 	} catch (error) {
 		console.error(`event ${event.id} video cache unavailable; discovering videos upstream`, error);
 		return null;
 	}
-	const failedWithoutVideos = sync?.resultCount === 0 && sync.warnings.length > 0;
-	if (
-		!sync ||
-		(!allowStale &&
-			(failedWithoutVideos || Date.now() - sync.syncedAt.getTime() >= cacheTtl(event)))
-	)
-		return null;
-
-	const rows = await db
-		.select({ data: eventVideo.data })
-		.from(eventVideo)
-		.where(eq(eventVideo.eventId, event.id));
-
-	return {
-		videos: rows.map((row) => row.data),
-		warnings: sync.warnings ?? []
-	};
 }
 
 async function writeEventVideoCache(eventId: number, result: EventVideoResult) {
@@ -951,29 +973,33 @@ async function discoverEventVideosUncoalesced(
 
 	// Direct links are the most trusted and cheapest route to a usable player. Resolve event-page
 	// links before widening to the webcast index or channel uploads.
-	for (const source of ['event-page', 'webcast-index'] as VideoSource[]) {
-		const group = directBySource.get(source);
-		if (!group) continue;
-		try {
-			videos.push(
-				...(await getYouTubeVideos(group.ids, source, group.urls, group.confidence, context))
-			);
-		} catch (error) {
-			addWarning(context, warningFor(error, 'a referenced youtube video could not be read'));
-		}
-	}
+	const directVideos = await Promise.all(
+		(['event-page', 'webcast-index'] as VideoSource[]).map(async (source) => {
+			const group = directBySource.get(source);
+			if (!group) return [];
+			try {
+				return await getYouTubeVideos(group.ids, source, group.urls, group.confidence, context);
+			} catch (error) {
+				addWarning(context, warningFor(error, 'a referenced youtube video could not be read'));
+				return [];
+			}
+		})
+	);
+	videos.push(...directVideos.flat());
 
-	for (const { id, reference } of playlistReferences) {
-		try {
-			const ids = await getPlaylistVideoIds(id, context);
-			const urls = new Map(ids.map((videoId) => [videoId, reference.sourceUrl]));
-			videos.push(
-				...(await getYouTubeVideos(ids, reference.source, urls, reference.confidence, context))
-			);
-		} catch (error) {
-			addWarning(context, warningFor(error, 'a referenced youtube playlist could not be read'));
-		}
-	}
+	const playlistVideos = await Promise.all(
+		playlistReferences.map(async ({ id, reference }) => {
+			try {
+				const ids = await getPlaylistVideoIds(id, context);
+				const urls = new Map(ids.map((videoId) => [videoId, reference.sourceUrl]));
+				return await getYouTubeVideos(ids, reference.source, urls, reference.confidence, context);
+			} catch (error) {
+				addWarning(context, warningFor(error, 'a referenced youtube playlist could not be read'));
+				return [];
+			}
+		})
+	);
+	videos.push(...playlistVideos.flat());
 
 	// A one-day event with a direct broadcast is already usable. Channel expansion is reserved for
 	// missing direct film or multi-day coverage, which keeps both quota and latency predictable.
@@ -981,16 +1007,22 @@ async function discoverEventVideosUncoalesced(
 		coveredStreamDays(videos, event, windows) < expectedStreamDays(event);
 	if (needsChannelExpansion) {
 		const channelIds = new Map<string, DiscoveredReference>();
-		for (const reference of channelReferences) {
-			try {
-				const id = await resolveChannelId(parseYouTubeReference(reference.value)!, context);
-				if (id) channelIds.set(id, reference);
-			} catch (error) {
-				addWarning(
-					context,
-					warningFor(error, 'a referenced youtube channel could not be resolved')
-				);
-			}
+		const resolvedChannels = await Promise.all(
+			channelReferences.map(async (reference) => {
+				try {
+					const id = await resolveChannelId(parseYouTubeReference(reference.value)!, context);
+					return id ? ([id, reference] as const) : null;
+				} catch (error) {
+					addWarning(
+						context,
+						warningFor(error, 'a referenced youtube channel could not be resolved')
+					);
+					return null;
+				}
+			})
+		);
+		for (const resolved of resolvedChannels) {
+			if (resolved) channelIds.set(...resolved);
 		}
 
 		// the channel that broadcast one day of the event usually broadcast the rest, so it is worth
@@ -1006,42 +1038,44 @@ async function discoverEventVideosUncoalesced(
 			});
 		}
 
-		for (const [channelId, reference] of [...channelIds].slice(0, MAX_CHANNELS)) {
-			try {
-				const ids = await listChannelUploadIds({
-					channelId,
-					publishedAfter: windows.publishedAfter,
-					publishedBefore: windows.publishedBefore,
-					context
-				});
-				const urls = new Map(ids.map((id) => [id, reference.sourceUrl]));
-				const discovered = await getYouTubeVideos(
-					ids,
-					'youtube-channel',
-					urls,
-					Math.min(reference.confidence, 0.92),
-					context
-				);
+		const channelVideos = await Promise.all(
+			[...channelIds].slice(0, MAX_CHANNELS).map(async ([channelId, reference]) => {
+				try {
+					const ids = await listChannelUploadIds({
+						channelId,
+						publishedAfter: windows.publishedAfter,
+						publishedBefore: windows.publishedBefore,
+						context
+					});
+					const urls = new Map(ids.map((id) => [id, reference.sourceUrl]));
+					const discovered = await getYouTubeVideos(
+						ids,
+						'youtube-channel',
+						urls,
+						Math.min(reference.confidence, 0.92),
+						context
+					);
 
-				videos.push(
-					...discovered.filter(
+					return discovered.filter(
 						(video) =>
 							isBroadcast(video) &&
 							matchesEventProgram(video.title, event) &&
 							(overlapsEvent(video, windows.overlapStart, windows.overlapEnd) ||
 								titleScore(video.title, event) >= 0.25)
-					)
-				);
-			} catch (error) {
-				addWarning(
-					context,
-					warningFor(
-						error,
-						'additional videos from a referenced youtube channel could not be searched'
-					)
-				);
-			}
-		}
+					);
+				} catch (error) {
+					addWarning(
+						context,
+						warningFor(
+							error,
+							'additional videos from a referenced youtube channel could not be searched'
+						)
+					);
+					return [];
+				}
+			})
+		);
+		videos.push(...channelVideos.flat());
 	}
 
 	// Some older event pages are now protected by a bot check, even though their youtube streams
@@ -1109,7 +1143,7 @@ export async function discoverEventVideos(event: EventData): Promise<EventVideoR
 			const result = await discoverEventVideosUncoalesced(event, context);
 			context.metrics.resultCount = result.videos.length;
 			try {
-				await writeEventVideoCache(event.id, result);
+				await withVideoCacheTimeout(writeEventVideoCache(event.id, result));
 			} catch (error) {
 				console.error(
 					`event ${event.id} video cache write unavailable; returning discovered videos`,
