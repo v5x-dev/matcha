@@ -5,8 +5,11 @@
 	const { children, data } = $props();
 </script>
 
-<Sidebar.Provider style="--sidebar-width: 18rem;">
-	<Sidebar.Inset class="max-h-screen overflow-hidden">
+<Sidebar.Provider
+	class="h-full min-h-0 overflow-hidden overscroll-none"
+	style="--sidebar-width: 18rem;"
+>
+	<Sidebar.Inset class="h-full max-h-full overflow-hidden">
 		{@render children()}
 	</Sidebar.Inset>
 	<EventSidebar event={data.event} matches={data.matches} user={data.user} />
