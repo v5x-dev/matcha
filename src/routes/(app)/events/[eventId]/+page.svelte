@@ -9,6 +9,7 @@
 	import YoutubeIcon from '$lib/components/youtube-icon.svelte';
 	import {
 		clearPlaybackOffset,
+		saveMatchPlaybackStart,
 		saveMatchPlaybackWindow,
 		savePlaybackOffset
 	} from '$lib/remote/match-playback.remote';
@@ -143,7 +144,10 @@
 	const frameWidth = $derived(Math.min(stageWidth, (stageHeight * 16) / 9));
 	const frameHeight = $derived(Math.min(stageHeight, (stageWidth * 9) / 16));
 	const matchWindows = new SvelteMap<number, MatchWindow>();
+	const matchStarts = new SvelteMap<number, { videoId: string; startSeconds: number }>();
 	const playbackOffsets = new SvelteMap<string, number | null>();
+	let calibrationError = $state<string | null>(null);
+	let calibrationErrorTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const youtubeUrl = $derived(
 		appliedVideoId
@@ -166,9 +170,12 @@
 	function windowFor(matchId: number, currentPlayback: MatchPlayback): MatchWindow {
 		const offsetSeconds = offsetFor(currentPlayback.video.videoId);
 		const videoEndSeconds = currentPlayback.video.durationSeconds ?? Number.POSITIVE_INFINITY;
-		const savedStart = savedMatchStarts.find(
-			(start) => start.matchId === matchId && start.videoId === currentPlayback.video.videoId
-		);
+		const localStart = matchStarts.get(matchId);
+		const savedStart =
+			(localStart?.videoId === currentPlayback.video.videoId ? localStart : undefined) ??
+			savedMatchStarts.find(
+				(start) => start.matchId === matchId && start.videoId === currentPlayback.video.videoId
+			);
 		const startSeconds = clamp(
 			savedStart?.startSeconds ?? currentPlayback.startSeconds + offsetSeconds,
 			0,
@@ -227,6 +234,17 @@
 
 	function clamp(value: number, min: number, max: number): number {
 		return Math.max(min, Math.min(max, value));
+	}
+
+	function showCalibrationError(error: unknown) {
+		if (calibrationErrorTimer) clearTimeout(calibrationErrorTimer);
+		const message = error instanceof Error ? error.message : 'calibration could not be saved';
+		calibrationError = message.toLowerCase();
+		calibrationErrorTimer = setTimeout(() => (calibrationError = null), 5000);
+	}
+
+	function saveCalibration(action: () => Promise<void>) {
+		void action().catch(showCalibrationError);
 	}
 
 	function stopProgressPolling() {
@@ -384,7 +402,7 @@
 		}
 	}
 
-	async function setMatchStart() {
+	async function setPlaybackOffsetHere() {
 		if (!activeMatch || !matchWindow || !playback) return;
 		const videoId = playback.video.videoId;
 		const playerSeconds = await player?.getCurrentTime();
@@ -402,6 +420,24 @@
 		appliedStartSeconds = nextWindow.startSeconds;
 		appliedEndSeconds = nextWindow.endSeconds;
 		sliderSeconds = clamp(currentSeconds, nextWindow.startSeconds, nextWindow.endSeconds);
+	}
+
+	async function setMatchStart() {
+		if (!activeMatch || !matchWindow || !playback) return;
+		const matchId = activeMatch.id;
+		const videoId = playback.video.videoId;
+		const playerSeconds = await player?.getCurrentTime();
+		const startSeconds = Math.max(0, Math.floor(playerSeconds ?? currentSeconds));
+
+		const saved = await saveMatchPlaybackStart({ eventId, matchId, videoId, startSeconds });
+		matchStarts.set(matchId, saved);
+
+		if (activeMatch?.id === matchId && playback?.video.videoId === videoId) {
+			const nextWindow = windowFor(matchId, playback);
+			appliedStartSeconds = nextWindow.startSeconds;
+			appliedEndSeconds = nextWindow.endSeconds;
+			sliderSeconds = clamp(currentSeconds, nextWindow.startSeconds, nextWindow.endSeconds);
+		}
 	}
 
 	async function resetPlaybackOffset() {
@@ -490,7 +526,8 @@
 					createdPlayer = true;
 					loadedVideoId = initialVideo.videoId;
 					player.on('stateChange', (state) => {
-						isPlaying = state.data === 1;
+						if (state.data === 1) isPlaying = true;
+						if (state.data === 0 || state.data === 2 || state.data === 5) isPlaying = false;
 						scheduleProgressPolling();
 						if (state.data === 1) {
 							finishBrowserMetric(playableVideoMetric, { videoId: loadedVideoId ?? null });
@@ -553,6 +590,7 @@
 	onDestroy(() => {
 		updateSequence++;
 		stopProgressPolling();
+		if (calibrationErrorTimer) clearTimeout(calibrationErrorTimer);
 		void player?.destroy();
 	});
 </script>
@@ -687,22 +725,21 @@
 			</Tooltip.Root>
 		</div>
 
-		<div class="hidden"></div>
-
 		<div class="order-3 flex shrink-0 items-center gap-0.5">
 			<Tooltip.Root>
 				<Tooltip.Trigger>
 					{#snippet child({ props })}
-						<Button
-							{...props}
-							variant="ghost"
-							size="icon-sm"
-							disabled={durationSeconds <= 0}
-							onclick={() => void seekViewer(currentSeconds - 5)}
-							aria-label="back 5 seconds"
-						>
-							<RotateCcwIcon />
-						</Button>
+						<span {...props} class="inline-flex">
+							<Button
+								variant="ghost"
+								size="icon-sm"
+								disabled={durationSeconds <= 0}
+								onclick={() => void seekViewer(currentSeconds - 5)}
+								aria-label="back 5 seconds"
+							>
+								<RotateCcwIcon />
+							</Button>
+						</span>
 					{/snippet}
 				</Tooltip.Trigger>
 				<Tooltip.Content>back 5 seconds</Tooltip.Content>
@@ -711,16 +748,17 @@
 			<Tooltip.Root>
 				<Tooltip.Trigger>
 					{#snippet child({ props })}
-						<Button
-							{...props}
-							variant="ghost"
-							size="icon-sm"
-							disabled={durationSeconds <= 0}
-							onclick={() => void togglePlayback()}
-							aria-label={isPlaying ? 'pause' : 'play'}
-						>
-							{#if isPlaying}<PauseIcon />{:else}<PlayIcon />{/if}
-						</Button>
+						<span {...props} class="inline-flex">
+							<Button
+								variant="ghost"
+								size="icon-sm"
+								disabled={durationSeconds <= 0}
+								onclick={() => void togglePlayback()}
+								aria-label={isPlaying ? 'pause' : 'play'}
+							>
+								{#if isPlaying}<PauseIcon />{:else}<PlayIcon />{/if}
+							</Button>
+						</span>
 					{/snippet}
 				</Tooltip.Trigger>
 				<Tooltip.Content>{isPlaying ? 'pause' : 'play'}</Tooltip.Content>
@@ -729,16 +767,17 @@
 			<Tooltip.Root>
 				<Tooltip.Trigger>
 					{#snippet child({ props })}
-						<Button
-							{...props}
-							variant="ghost"
-							size="icon-sm"
-							disabled={durationSeconds <= 0}
-							onclick={() => void seekViewer(currentSeconds + 5)}
-							aria-label="forward 5 seconds"
-						>
-							<RotateCwIcon />
-						</Button>
+						<span {...props} class="inline-flex">
+							<Button
+								variant="ghost"
+								size="icon-sm"
+								disabled={durationSeconds <= 0}
+								onclick={() => void seekViewer(currentSeconds + 5)}
+								aria-label="forward 5 seconds"
+							>
+								<RotateCwIcon />
+							</Button>
+						</span>
 					{/snippet}
 				</Tooltip.Trigger>
 				<Tooltip.Content>forward 5 seconds</Tooltip.Content>
@@ -747,16 +786,17 @@
 			<Tooltip.Root>
 				<Tooltip.Trigger>
 					{#snippet child({ props })}
-						<Button
-							{...props}
-							variant="ghost"
-							size="icon-sm"
-							disabled={durationSeconds <= 0}
-							onclick={() => void toggleMute()}
-							aria-label={isMuted ? 'unmute' : 'mute'}
-						>
-							{#if isMuted}<VolumeXIcon />{:else}<Volume2Icon />{/if}
-						</Button>
+						<span {...props} class="inline-flex">
+							<Button
+								variant="ghost"
+								size="icon-sm"
+								disabled={durationSeconds <= 0}
+								onclick={() => void toggleMute()}
+								aria-label={isMuted ? 'unmute' : 'mute'}
+							>
+								{#if isMuted}<VolumeXIcon />{:else}<Volume2Icon />{/if}
+							</Button>
+						</span>
 					{/snippet}
 				</Tooltip.Trigger>
 				<Tooltip.Content>{isMuted ? 'unmute' : 'mute'}</Tooltip.Content>
@@ -825,7 +865,7 @@
 								size="sm"
 								class="flex-1"
 								disabled={durationSeconds <= 0 || !canSetStart || savePlaybackOffset.pending > 0}
-								onclick={() => void setMatchStart()}
+								onclick={() => saveCalibration(setPlaybackOffsetHere)}
 							>
 								<ClockArrowLeftIcon /> set here
 							</Button>
@@ -835,7 +875,7 @@
 									size="sm"
 									class="text-muted-foreground"
 									disabled={clearPlaybackOffset.pending > 0}
-									onclick={() => void resetPlaybackOffset()}
+									onclick={() => saveCalibration(resetPlaybackOffset)}
 								>
 									<TimerResetIcon /> reset
 								</Button>
@@ -863,8 +903,10 @@
 							<Button
 								variant="outline"
 								size="sm"
-								disabled={durationSeconds <= 0 || !canSetStart || savePlaybackOffset.pending > 0}
-								onclick={() => void setMatchStart()}
+								disabled={durationSeconds <= 0 ||
+									!canSetStart ||
+									saveMatchPlaybackStart.pending > 0}
+								onclick={() => saveCalibration(setMatchStart)}
 							>
 								<ClockArrowLeftIcon /> set start
 							</Button>
@@ -872,7 +914,7 @@
 								variant="outline"
 								size="sm"
 								disabled={durationSeconds <= 0 || !canSetEnd || saveMatchPlaybackWindow.pending > 0}
-								onclick={() => void setMatchEnd()}
+								onclick={() => saveCalibration(setMatchEnd)}
 							>
 								<ClockArrowRightIcon /> set end
 							</Button>
@@ -899,9 +941,6 @@
 			</Tooltip.Root>
 		</div>
 
-		<span class="hidden">
-			{formatTime(currentSeconds)}
-		</span>
 		<div
 			class:pointer-events-none={durationSeconds <= 0}
 			class:opacity-50={durationSeconds <= 0}
@@ -919,11 +958,17 @@
 				ariaValueText={formatTime}
 			/>
 		</div>
-		<span class="hidden">
-			{formatTime(seekMaxSeconds)}
-		</span>
 	</div>
 </div>
+
+{#if calibrationError}
+	<div
+		class="fixed right-4 bottom-4 z-50 max-w-sm rounded-2xl border border-destructive/40 bg-background px-4 py-3 text-sm text-destructive shadow-lg"
+		role="alert"
+	>
+		{calibrationError}
+	</div>
+{/if}
 
 <style>
 	/* youtube-player swaps the mount div for an iframe with its own default dimensions */

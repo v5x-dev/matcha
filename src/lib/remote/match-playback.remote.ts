@@ -1,4 +1,4 @@
-import { command, query } from '$app/server';
+import { command, getRequestEvent, query } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -91,9 +91,16 @@ const startSchema = z.object({
 	startSeconds: z.number().int().nonnegative()
 });
 
+function requireUser() {
+	const { locals } = getRequestEvent();
+	if (!locals.user) error(401, 'sign in to change playback calibration');
+	return locals.user;
+}
+
 export const savePlaybackOffset = command(
 	offsetSchema,
 	async (input): Promise<SavedPlaybackOffset> => {
+		requireUser();
 		const [cachedMatch] = await db
 			.select({ id: match.id })
 			.from(match)
@@ -127,6 +134,7 @@ const clearOffsetSchema = z.object({
 export const clearPlaybackOffset = command(
 	clearOffsetSchema,
 	async (input): Promise<{ videoId: string }> => {
+		requireUser();
 		const [saved] = await db
 			.select({ videoId: eventPlaybackOffset.videoId })
 			.from(eventPlaybackOffset)
@@ -155,6 +163,7 @@ export const clearPlaybackOffset = command(
 export const saveMatchPlaybackStart = command(
 	startSchema,
 	async (input): Promise<SavedMatchPlaybackStart> => {
+		requireUser();
 		const [cachedMatch] = await db
 			.select({ id: match.id })
 			.from(match)
@@ -182,6 +191,7 @@ export const saveMatchPlaybackStart = command(
 export const saveMatchPlaybackWindow = command(
 	saveSchema,
 	async (input): Promise<SavedMatchPlaybackWindow> => {
+		requireUser();
 		const [cachedMatch] = await db
 			.select({ id: match.id })
 			.from(match)

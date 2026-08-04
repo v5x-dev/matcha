@@ -5,9 +5,9 @@
 	const { children, data } = $props();
 </script>
 
-<Sidebar.Provider>
+<Sidebar.Provider style="--sidebar-width: 18rem;">
 	<Sidebar.Inset class="max-h-screen overflow-hidden">
 		{@render children()}
 	</Sidebar.Inset>
-	<EventSidebar event={data.event} matches={data.matches} />
+	<EventSidebar event={data.event} matches={data.matches} user={data.user} />
 </Sidebar.Provider>

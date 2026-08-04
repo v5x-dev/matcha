@@ -2,6 +2,8 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import * as Sidebar from '$lib/components/ui/sidebar';
+	import * as Tabs from '$lib/components/ui/tabs';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { eventRoundGroups } from '$lib/match-navigation';
 	import { activeMatchId, requestMatchRestart } from '$lib/match-param.svelte';
 	import { groupMatchesByStreamDay } from '$lib/stream-days';
@@ -11,26 +13,40 @@
 	import { SvelteMap } from 'svelte/reactivity';
 	import { slide } from 'svelte/transition';
 	import CoffeeIcon from '@lucide/svelte/icons/coffee';
+	import ListIcon from '@lucide/svelte/icons/list';
+	import MessageSquareIcon from '@lucide/svelte/icons/message-square';
+	import MatchChat from './match-chat.svelte';
 
-	let { event, matches }: { event: EventData; matches: MatchData[] } = $props();
+	let {
+		event,
+		matches,
+		user
+	}: {
+		event: EventData;
+		matches: MatchData[];
+		user: { id: string; name: string } | null;
+	} = $props();
 
 	const eventId = $derived(Number(page.params.eventId));
 	const activeMatch = $derived(activeMatchId() ?? matches[0]?.id ?? null);
+	const activeMatchData = $derived(matches.find((match) => match.id === activeMatch) ?? null);
+
+	let tab = $state('matches');
 
 	function sortMatches(a: MatchData, b: MatchData): number {
 		return a.instance - b.instance || a.matchnum - b.matchnum;
 	}
 
+	const sidebar = Sidebar.useSidebar();
+
 	function handleMatchClick(event: MouseEvent, matchId: number) {
-		if (
-			matchId !== activeMatch ||
-			event.button !== 0 ||
-			event.metaKey ||
-			event.ctrlKey ||
-			event.shiftKey ||
-			event.altKey
-		)
+		if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
 			return;
+
+		// the sidebar is a sheet on mobile, so a pick has to get it out of the way of the film
+		if (sidebar.isMobile) sidebar.setOpenMobile(false);
+
+		if (matchId !== activeMatch) return;
 
 		event.preventDefault();
 		requestMatchRestart(matchId);
@@ -135,9 +151,12 @@
 		updateStickyHeading($virtualizer);
 	});
 
+	// viewportRef is a dependency because the list unmounts while the chat tab is open; on the way
+	// back the virtualizer starts at the top and has to be pointed at the selection again.
 	$effect(() => {
+		const viewport = viewportRef;
 		const index = rows.findIndex((row) => row.type === 'match' && row.match.id === activeMatch);
-		if (index < 0) return;
+		if (!viewport || index < 0) return;
 
 		queueMicrotask(() => $virtualizer.scrollToIndex(index, { align: 'auto' }));
 	});
@@ -170,106 +189,141 @@
 </script>
 
 <Sidebar.Root variant="floating" side="right">
-	<Sidebar.Header class="gap-3 pb-4">
-		<Sidebar.MenuButton class="font-semibold tracking-tight text-primary!">
-			{#snippet child({ props })}
-				<a {...props} href={resolve('/')}
-					><CoffeeIcon />
-					<span>matcha</span></a
-				>
-			{/snippet}
-		</Sidebar.MenuButton>
-		<p class="px-2 text-sm leading-5 font-medium text-muted-foreground">
-			{event.name.split(':')[0].toLowerCase()}
-		</p>
-	</Sidebar.Header>
-	<Sidebar.Content
-		bind:ref={viewportRef}
-		hideScrollbar={false}
-		class="matches-sidebar-scroll scrollbar-gutter-stable px-2"
-		style="overflow-y: scroll;"
-	>
-		<div class="relative w-full shrink-0" style="height: {$virtualizer.getTotalSize()}px;">
-			{#if stickyHeading}
-				<Sidebar.GroupLabel class="sticky top-0 z-20 rounded-none bg-sidebar">
-					{stickyHeading.label}
-				</Sidebar.GroupLabel>
-			{/if}
-			{#each $virtualizer.getVirtualItems() as virtualRow (virtualRow.key)}
-				{@const row = rows[virtualRow.index]}
-				{#if row}
-					<div
-						class="absolute top-0 left-0 w-full"
-						style="transform: translateY({virtualRow.start}px);"
-						data-index={virtualRow.index}
-						use:measureRow
+	<Tabs.Root bind:value={tab} class="min-h-0 flex-1 gap-0">
+		<Sidebar.Header class="gap-3 pb-3">
+			<Sidebar.MenuButton class="font-semibold tracking-tight text-primary!">
+				{#snippet child({ props })}
+					<a {...props} href={resolve('/')}
+						><CoffeeIcon />
+						<span>matcha</span></a
 					>
-						{#if row.type === 'heading'}
-							<Sidebar.GroupLabel class={virtualRow.index === stickyHeadingIndex ? 'invisible' : ''}
-								>{row.label}</Sidebar.GroupLabel
+				{/snippet}
+			</Sidebar.MenuButton>
+			<p class="px-2 text-sm leading-5 font-medium text-muted-foreground">
+				{event.name.split(':')[0].toLowerCase()}
+			</p>
+			<Tabs.List class="w-full">
+				<Tooltip.Root>
+					<Tooltip.Trigger>
+						{#snippet child({ props })}
+							<Tabs.Trigger {...props} value="matches" aria-label="matches">
+								<ListIcon />
+							</Tabs.Trigger>
+						{/snippet}
+					</Tooltip.Trigger>
+					<Tooltip.Content>matches</Tooltip.Content>
+				</Tooltip.Root>
+
+				<Tooltip.Root>
+					<Tooltip.Trigger>
+						{#snippet child({ props })}
+							<Tabs.Trigger {...props} value="chat" aria-label="chat">
+								<MessageSquareIcon />
+							</Tabs.Trigger>
+						{/snippet}
+					</Tooltip.Trigger>
+					<Tooltip.Content>match chat</Tooltip.Content>
+				</Tooltip.Root>
+			</Tabs.List>
+		</Sidebar.Header>
+
+		<Tabs.Content value="chat" class="flex min-h-0 flex-1 flex-col">
+			<MatchChat {eventId} match={activeMatchData} {user} />
+		</Tabs.Content>
+
+		<Tabs.Content value="matches" class="flex min-h-0 flex-1 flex-col">
+			<Sidebar.Content
+				bind:ref={viewportRef}
+				hideScrollbar={false}
+				class="matches-sidebar-scroll scrollbar-gutter-stable px-2"
+				style="overflow-y: scroll;"
+			>
+				<div class="relative w-full shrink-0" style="height: {$virtualizer.getTotalSize()}px;">
+					{#if stickyHeading}
+						<Sidebar.GroupLabel class="sticky top-0 z-20 rounded-none bg-sidebar">
+							{stickyHeading.label}
+						</Sidebar.GroupLabel>
+					{/if}
+					{#each $virtualizer.getVirtualItems() as virtualRow (virtualRow.key)}
+						{@const row = rows[virtualRow.index]}
+						{#if row}
+							<div
+								class="absolute top-0 left-0 w-full"
+								style="transform: translateY({virtualRow.start}px);"
+								data-index={virtualRow.index}
+								use:measureRow
 							>
-						{:else}
-							<Sidebar.MenuButton
-								class="h-8 items-center gap-2 px-3 py-2 transition-colors duration-150 data-active:h-auto data-active:bg-sidebar-accent data-active:py-2.5"
-								isActive={row.match.id === activeMatch}
-							>
-								{#snippet child({ props })}
-									<div {...props}>
-										<div class="flex min-w-0 flex-1 flex-col gap-1">
-											<a
-												class="flex min-w-0 items-center gap-2"
-												href={resolve(`/(app)/events/[eventId]?match=${row.match.id}`, {
-													eventId: eventId.toString()
-												})}
-												aria-current={row.match.id === activeMatch ? 'page' : undefined}
-												onclick={(event) => handleMatchClick(event, row.match.id)}
-											>
-												<span class="min-w-0 truncate font-medium">
-													{row.match.name.toLowerCase()}
-												</span>
-											</a>
-											{#if row.match.id === activeMatch}
-												<div class="grid gap-1" in:slide={{ duration: 180 }}>
-													<span class="flex min-w-0 items-center gap-1 text-xs">
-														<span class="w-5 shrink-0 font-semibold text-blue-400">
-															{allianceScore(row.match, 'blue')}
+								{#if row.type === 'heading'}
+									<Sidebar.GroupLabel
+										class={virtualRow.index === stickyHeadingIndex ? 'invisible' : ''}
+										>{row.label}</Sidebar.GroupLabel
+									>
+								{:else}
+									<Sidebar.MenuButton
+										class="h-8 items-center gap-2 px-3 py-2 transition-colors duration-150 data-active:h-auto data-active:bg-sidebar-accent data-active:py-2.5"
+										isActive={row.match.id === activeMatch}
+									>
+										{#snippet child({ props })}
+											<div {...props}>
+												<div class="flex min-w-0 flex-1 flex-col gap-1">
+													<a
+														class="flex min-w-0 items-center gap-2"
+														href={resolve(`/(app)/events/[eventId]?match=${row.match.id}`, {
+															eventId: eventId.toString()
+														})}
+														aria-current={row.match.id === activeMatch ? 'page' : undefined}
+														onclick={(event) => handleMatchClick(event, row.match.id)}
+													>
+														<span class="min-w-0 truncate font-medium">
+															{row.match.name.toLowerCase()}
 														</span>
-														<span class="truncate text-muted-foreground">
-															{#each allianceTeams(row.match, 'blue') as team, index (team)}
-																{#if index > 0}<span aria-hidden="true">&nbsp;·&nbsp;</span>{/if}
-																<a
-																	class="hover:text-foreground hover:underline"
-																	href={teamHref(team)}>{team.toLowerCase()}</a
-																>
-															{:else}—{/each}
-														</span>
-													</span>
-													<span class="flex min-w-0 items-center gap-1 text-xs">
-														<span class="w-5 shrink-0 font-semibold text-red-400">
-															{allianceScore(row.match, 'red')}
-														</span>
-														<span class="truncate text-muted-foreground">
-															{#each allianceTeams(row.match, 'red') as team, index (team)}
-																{#if index > 0}<span aria-hidden="true">&nbsp;·&nbsp;</span>{/if}
-																<a
-																	class="hover:text-foreground hover:underline"
-																	href={teamHref(team)}>{team.toLowerCase()}</a
-																>
-															{:else}—{/each}
-														</span>
-													</span>
+													</a>
+													{#if row.match.id === activeMatch}
+														<div class="grid gap-1" in:slide={{ duration: 180 }}>
+															<span class="flex min-w-0 items-center gap-1 text-xs">
+																<span class="w-5 shrink-0 font-semibold text-blue-400">
+																	{allianceScore(row.match, 'blue')}
+																</span>
+																<span class="truncate text-muted-foreground">
+																	{#each allianceTeams(row.match, 'blue') as team, index (team)}
+																		{#if index > 0}<span aria-hidden="true">&nbsp;·&nbsp;</span
+																			>{/if}
+																		<a
+																			class="hover:text-foreground hover:underline"
+																			href={teamHref(team)}>{team.toLowerCase()}</a
+																		>
+																	{:else}—{/each}
+																</span>
+															</span>
+															<span class="flex min-w-0 items-center gap-1 text-xs">
+																<span class="w-5 shrink-0 font-semibold text-red-400">
+																	{allianceScore(row.match, 'red')}
+																</span>
+																<span class="truncate text-muted-foreground">
+																	{#each allianceTeams(row.match, 'red') as team, index (team)}
+																		{#if index > 0}<span aria-hidden="true">&nbsp;·&nbsp;</span
+																			>{/if}
+																		<a
+																			class="hover:text-foreground hover:underline"
+																			href={teamHref(team)}>{team.toLowerCase()}</a
+																		>
+																	{:else}—{/each}
+																</span>
+															</span>
+														</div>
+													{/if}
 												</div>
-											{/if}
-										</div>
-									</div>
-								{/snippet}
-							</Sidebar.MenuButton>
+											</div>
+										{/snippet}
+									</Sidebar.MenuButton>
+								{/if}
+							</div>
 						{/if}
-					</div>
-				{/if}
-			{/each}
-		</div>
-	</Sidebar.Content>
+					{/each}
+				</div>
+			</Sidebar.Content>
+		</Tabs.Content>
+	</Tabs.Root>
 </Sidebar.Root>
 
 <style>
