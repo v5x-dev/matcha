@@ -6,7 +6,7 @@
 </script>
 
 <Sidebar.Provider
-	class="h-full min-h-0 overflow-hidden overscroll-none"
+	class="h-full min-h-0 touch-none overflow-hidden overscroll-none md:touch-auto"
 	style="--sidebar-width: 18rem;"
 >
 	<Sidebar.Inset class="h-full max-h-full overflow-hidden">
