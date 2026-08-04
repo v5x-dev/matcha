@@ -22,7 +22,7 @@ export type YouTubeReference =
 	| { kind: 'playlist'; id: string; url: string };
 
 /** where a video came from, ordered by how much we trust it. */
-export type VideoSource = 'event-page' | 'webcast-index' | 'youtube-channel';
+export type VideoSource = 'event-page' | 'webcast-index' | 'youtube-channel' | 'youtube-search';
 
 export type EventVideo = {
 	videoId: string;
@@ -133,10 +133,19 @@ function cacheTtl(event: EventData) {
 
 async function readEventVideoCache(event: EventData, allowStale = false) {
 	const [sync] = await db
-		.select({ syncedAt: eventVideoSync.syncedAt, warnings: eventVideoSync.warnings })
+		.select({
+			syncedAt: eventVideoSync.syncedAt,
+			resultCount: eventVideoSync.resultCount,
+			warnings: eventVideoSync.warnings
+		})
 		.from(eventVideoSync)
 		.where(eq(eventVideoSync.eventId, event.id));
-	if (!sync || (!allowStale && Date.now() - sync.syncedAt.getTime() >= cacheTtl(event)))
+	const failedWithoutVideos = sync?.resultCount === 0 && sync.warnings.length > 0;
+	if (
+		!sync ||
+		(!allowStale &&
+			(failedWithoutVideos || Date.now() - sync.syncedAt.getTime() >= cacheTtl(event)))
+	)
 		return null;
 
 	const rows = await db
@@ -583,6 +592,12 @@ export function extractYouTubeUrls(html: string) {
 	);
 }
 
+/** video ids embedded in youtube's search response, including results with no visible watch link. */
+export function extractYouTubeVideoIds(html: string) {
+	const matches = html.matchAll(/"videoId":"([\w-]{11})"/g);
+	return [...new Set([...matches].map((match) => match[1]))];
+}
+
 async function fetchVexPage(url: string) {
 	return measureExternalRequest(
 		'vex.webcast.page',
@@ -603,6 +618,29 @@ async function fetchVexPage(url: string) {
 			return response.text();
 		},
 		{ url }
+	);
+}
+
+async function fetchYouTubeSearchPage(query: string) {
+	return measureExternalRequest(
+		'youtube.search.page',
+		async () => {
+			const url = new URL('https://www.youtube.com/results');
+			url.searchParams.set('search_query', query);
+			const response = await fetch(url, {
+				headers: {
+					accept: 'text/html,application/xhtml+xml',
+					'user-agent': 'matcha event media indexer/1.0'
+				},
+				redirect: 'follow',
+				signal: AbortSignal.timeout(5_000)
+			});
+
+			if (!response.ok) throw new Error(`youtube search returned ${response.status}`);
+
+			return response.text();
+		},
+		{ query }
 	);
 }
 
@@ -811,6 +849,42 @@ function expectedStreamDays(event: EventData) {
 	return Math.max(1, Math.ceil((end - start) / (24 * 60 * 60 * 1000)) + 1);
 }
 
+const SEARCH_STOP_WORDS = new Set([
+	'the',
+	'and',
+	'for',
+	'vex',
+	'v5rc',
+	'vrc',
+	'robotics',
+	'competition',
+	'event',
+	'tournament',
+	'signature',
+	'high',
+	'school',
+	'middle',
+	'elementary',
+	'2024',
+	'2025',
+	'2026',
+	'2027'
+]);
+
+/** keep the fallback query short enough for youtube to match the stream's actual title. */
+function eventSearchQuery(event: EventData) {
+	const nameTerms = event.name
+		.toLowerCase()
+		.split(/[^a-z0-9]+/)
+		.filter((token) => token.length > 2 && !SEARCH_STOP_WORDS.has(token))
+		.slice(0, 2);
+	const venueToken = event.location?.venue
+		?.split(/[^a-z0-9]+/i)
+		.find((token) => token.length > 2 && token === token.toUpperCase());
+
+	return [...nameTerms, ...(venueToken ? ['at', venueToken.toLowerCase()] : [])].join(' ');
+}
+
 function coveredStreamDays(
 	videos: EventVideo[],
 	event: EventData,
@@ -960,6 +1034,34 @@ async function discoverEventVideosUncoalesced(
 						'additional videos from a referenced youtube channel could not be searched'
 					)
 				);
+			}
+		}
+	}
+
+	// Some older event pages are now protected by a bot check, even though their youtube streams
+	// are still public. A normal youtube results page is free to fetch and lets us recover those
+	// broadcasts without spending a 100-unit search.list quota request.
+	if (videos.length === 0) {
+		const query = eventSearchQuery(event);
+		if (query) {
+			try {
+				const html = await fetchYouTubeSearchPage(query);
+				const ids = extractYouTubeVideoIds(html).slice(0, 50);
+				const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+				const urls = new Map(ids.map((id) => [id, searchUrl]));
+				const discovered = await getYouTubeVideos(ids, 'youtube-search', urls, 0.7, context);
+
+				videos.push(
+					...discovered.filter(
+						(video) =>
+							isBroadcast(video) &&
+							matchesEventProgram(video.title, event) &&
+							overlapsEvent(video, windows.overlapStart, windows.overlapEnd) &&
+							titleScore(video.title, event) >= 0.25
+					)
+				);
+			} catch (error) {
+				addWarning(context, warningFor(error, 'youtube search could not be read'));
 			}
 		}
 	}
