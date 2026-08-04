@@ -3,6 +3,7 @@
 	import { activeMatchId, MATCH_RESTART_EVENT } from '$lib/match-param.svelte';
 	import { orderedEventMatches } from '$lib/match-navigation';
 	import { Button } from '$lib/components/ui/button';
+	import * as Popover from '$lib/components/ui/popover';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import YoutubeIcon from '$lib/components/youtube-icon.svelte';
 	import {
@@ -18,10 +19,12 @@
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import ClockArrowLeftIcon from '@lucide/svelte/icons/clock-arrow-left';
 	import ClockArrowRightIcon from '@lucide/svelte/icons/clock-arrow-right';
+	import ExpandIcon from '@lucide/svelte/icons/expand';
 	import PauseIcon from '@lucide/svelte/icons/pause';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
+	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
 	import TimerResetIcon from '@lucide/svelte/icons/timer-reset';
 	import Volume2Icon from '@lucide/svelte/icons/volume-2';
 	import VolumeXIcon from '@lucide/svelte/icons/volume-x';
@@ -132,6 +135,7 @@
 	// the player iframe is letterboxed to 16:9 here so youtube never paints its own black bars
 	let stageWidth = $state(0);
 	let stageHeight = $state(0);
+	let playerShell: HTMLDivElement;
 	const frameWidth = $derived(Math.min(stageWidth, (stageHeight * 16) / 9));
 	const frameHeight = $derived(Math.min(stageHeight, (stageWidth * 9) / 16));
 	const matchWindows = new SvelteMap<number, MatchWindow>();
@@ -211,6 +215,10 @@
 		return hours > 0
 			? `${hours}:${minutes.toString().padStart(2, '0')}:${seconds}`
 			: `${minutes}:${seconds}`;
+	}
+
+	function formatOffset(value: number): string {
+		return `${value >= 0 ? '+' : '−'}${formatTime(Math.abs(value))}`;
 	}
 
 	function clamp(value: number, min: number, max: number): number {
@@ -345,6 +353,15 @@
 			await player.mute();
 			isMuted = true;
 		}
+	}
+
+	async function toggleFullscreen() {
+		if (document.fullscreenElement) {
+			await document.exitFullscreen();
+			return;
+		}
+
+		await playerShell.requestFullscreen();
 	}
 
 	async function restartActiveMatch() {
@@ -548,8 +565,9 @@
 </svelte:head>
 
 <div
-	class="relative flex h-full w-full flex-col overflow-hidden bg-background"
+	class="player-shell group relative flex h-full w-full flex-col overflow-hidden bg-background"
 	id="player"
+	bind:this={playerShell}
 	data-match-id={appliedMatchId}
 	data-video-id={appliedVideoId}
 	data-start-seconds={appliedStartSeconds}
@@ -597,21 +615,37 @@
 		</div>
 	{/if}
 	<div
-		class="z-20 m-2 flex items-center gap-2 rounded-xl border border-border bg-card/80 p-3 shadow-lg backdrop-blur-sm"
+		class="playback-overlay pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-wrap items-center gap-x-2 gap-y-3 px-4 pt-24 pb-4 sm:px-6 sm:pt-32 sm:pb-6"
 	>
-		<div class="flex shrink-0 items-center gap-0.5">
+		<div class="order-1 flex min-w-0 flex-1 items-end justify-between gap-4">
+			<div class="min-w-0">
+				<p class="truncate text-sm font-semibold">
+					{activeMatch?.name.toLowerCase() ?? 'event film'}
+				</p>
+				<p class="truncate text-xs text-muted-foreground">
+					{event.name.split(':')[0].toLowerCase()}
+				</p>
+			</div>
+			<span class="shrink-0 text-xs text-muted-foreground">
+				{formatTime(currentSeconds)} / {formatTime(seekMaxSeconds)}
+			</span>
+		</div>
+
+		<div class="order-4 ml-auto flex shrink-0 items-center gap-0.5">
 			<Tooltip.Root>
 				<Tooltip.Trigger>
 					{#snippet child({ props })}
 						<Button
 							{...props}
 							variant="ghost"
-							size="icon-xs"
+							size="sm"
+							class="hidden sm:inline-flex"
 							href={previousMatch ? matchHref(previousMatch.id) : undefined}
 							disabled={!previousMatch}
 							aria-label="previous match"
 						>
 							<ChevronLeftIcon />
+							previous
 						</Button>
 					{/snippet}
 				</Tooltip.Trigger>
@@ -624,11 +658,13 @@
 						<Button
 							{...props}
 							variant="ghost"
-							size="icon-xs"
+							size="sm"
+							class="hidden sm:inline-flex"
 							href={nextMatch ? matchHref(nextMatch.id) : undefined}
 							disabled={!nextMatch}
 							aria-label="next match"
 						>
+							next
 							<ChevronRightIcon />
 						</Button>
 					{/snippet}
@@ -637,16 +673,16 @@
 			</Tooltip.Root>
 		</div>
 
-		<div class="mx-1 h-4 w-px bg-border"></div>
+		<div class="hidden"></div>
 
-		<div class="flex shrink-0 items-center gap-0.5">
+		<div class="order-3 flex shrink-0 items-center gap-0.5">
 			<Tooltip.Root>
 				<Tooltip.Trigger>
 					{#snippet child({ props })}
 						<Button
 							{...props}
 							variant="ghost"
-							size="icon-xs"
+							size="icon-sm"
 							disabled={durationSeconds <= 0}
 							onclick={() => void seekViewer(currentSeconds - 5)}
 							aria-label="back 5 seconds"
@@ -664,7 +700,7 @@
 						<Button
 							{...props}
 							variant="ghost"
-							size="icon-xs"
+							size="icon-sm"
 							disabled={durationSeconds <= 0}
 							onclick={() => void togglePlayback()}
 							aria-label={isPlaying ? 'pause' : 'play'}
@@ -682,7 +718,7 @@
 						<Button
 							{...props}
 							variant="ghost"
-							size="icon-xs"
+							size="icon-sm"
 							disabled={durationSeconds <= 0}
 							onclick={() => void seekViewer(currentSeconds + 5)}
 							aria-label="forward 5 seconds"
@@ -700,7 +736,7 @@
 						<Button
 							{...props}
 							variant="ghost"
-							size="icon-xs"
+							size="icon-sm"
 							disabled={durationSeconds <= 0}
 							onclick={() => void toggleMute()}
 							aria-label={isMuted ? 'unmute' : 'mute'}
@@ -718,7 +754,7 @@
 						<Button
 							{...props}
 							variant="ghost"
-							size="icon-xs"
+							size="icon-sm"
 							href={youtubeUrl ?? undefined}
 							disabled={!youtubeUrl}
 							{...youtubeUrl ? { target: '_blank', rel: 'noreferrer' } : {}}
@@ -731,49 +767,105 @@
 				<Tooltip.Content>youtube</Tooltip.Content>
 			</Tooltip.Root>
 
-			<div class="mx-1 h-4 w-px bg-border"></div>
-
-			<Tooltip.Root>
-				<Tooltip.Trigger>
+			<Popover.Root>
+				<Popover.Trigger>
 					{#snippet child({ props })}
-						<Button
-							{...props}
-							variant="ghost"
-							size="icon-xs"
-							disabled={durationSeconds <= 0 ||
-								!canSetStart ||
-								savePlaybackOffset.pending > 0 ||
-								clearPlaybackOffset.pending > 0 ||
-								saveMatchPlaybackWindow.pending > 0}
-							onclick={() => void setMatchStart()}
-							aria-label="set recording offset"
-						>
-							<ClockArrowLeftIcon />
+						<Button {...props} variant="ghost" size="icon-sm" aria-label="calibration">
+							<SlidersHorizontalIcon />
 						</Button>
 					{/snippet}
-				</Tooltip.Trigger>
-				<Tooltip.Content>set recording offset</Tooltip.Content>
-			</Tooltip.Root>
-
-			{#if canResetPlaybackOffset}
-				<Tooltip.Root>
-					<Tooltip.Trigger>
-						{#snippet child({ props })}
-							<Button
-								{...props}
-								variant="ghost"
-								size="icon-xs"
-								disabled={clearPlaybackOffset.pending > 0 || savePlaybackOffset.pending > 0}
-								onclick={() => void resetPlaybackOffset()}
-								aria-label="reset recording offset"
+				</Popover.Trigger>
+				<Popover.Content align="start" class="w-84 gap-0 p-0">
+					<Popover.Header class="p-4 pb-3">
+						<div class="flex items-center gap-2.5">
+							<span
+								class="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary"
 							>
-								<TimerResetIcon />
+								<SlidersHorizontalIcon class="size-4" />
+							</span>
+							<div class="flex flex-col gap-0.5">
+								<Popover.Title>calibration</Popover.Title>
+								<Popover.Description class="text-xs">
+									align the recording to the active match
+								</Popover.Description>
+							</div>
+						</div>
+					</Popover.Header>
+
+					<div class="flex flex-col gap-3 border-t border-border/60 p-4">
+						<div class="flex items-center justify-between gap-3">
+							<div class="flex flex-col gap-0.5">
+								<p class="font-medium">recording offset</p>
+								<p class="text-xs text-muted-foreground">applies to every match in this stream</p>
+							</div>
+							<span
+								class="rounded-full px-2 py-0.5 text-xs font-medium {canResetPlaybackOffset
+									? 'bg-primary/15 text-primary'
+									: 'bg-muted text-muted-foreground'}"
+							>
+								{playback ? formatOffset(offsetFor(playback.video.videoId)) : '+0:00'}
+							</span>
+						</div>
+						<div class="flex gap-2">
+							<Button
+								size="sm"
+								class="flex-1"
+								disabled={durationSeconds <= 0 || !canSetStart || savePlaybackOffset.pending > 0}
+								onclick={() => void setMatchStart()}
+							>
+								<ClockArrowLeftIcon /> set here
 							</Button>
-						{/snippet}
-					</Tooltip.Trigger>
-					<Tooltip.Content>reset recording offset</Tooltip.Content>
-				</Tooltip.Root>
-			{/if}
+							{#if canResetPlaybackOffset}
+								<Button
+									variant="ghost"
+									size="sm"
+									class="text-muted-foreground"
+									disabled={clearPlaybackOffset.pending > 0}
+									onclick={() => void resetPlaybackOffset()}
+								>
+									<TimerResetIcon /> reset
+								</Button>
+							{/if}
+						</div>
+					</div>
+
+					<div class="flex flex-col gap-3 border-t border-border/60 p-4">
+						<div class="flex flex-col gap-0.5">
+							<p class="font-medium">match bounds</p>
+							<p class="text-xs text-muted-foreground">trim this match to the action</p>
+						</div>
+						<div class="flex items-center gap-3 rounded-xl bg-muted/50 px-3 py-2 text-xs">
+							<div class="flex flex-col">
+								<span class="text-[0.65rem] text-muted-foreground">start</span>
+								<span class="font-medium">{formatTime(seekMinSeconds)}</span>
+							</div>
+							<span class="h-px flex-1 bg-border"></span>
+							<div class="flex flex-col items-end">
+								<span class="text-[0.65rem] text-muted-foreground">end</span>
+								<span class="font-medium">{formatTime(seekMaxSeconds)}</span>
+							</div>
+						</div>
+						<div class="grid grid-cols-2 gap-2">
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={durationSeconds <= 0 || !canSetStart || savePlaybackOffset.pending > 0}
+								onclick={() => void setMatchStart()}
+							>
+								<ClockArrowLeftIcon /> set start
+							</Button>
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={durationSeconds <= 0 || !canSetEnd || saveMatchPlaybackWindow.pending > 0}
+								onclick={() => void setMatchEnd()}
+							>
+								<ClockArrowRightIcon /> set end
+							</Button>
+						</div>
+					</div>
+				</Popover.Content>
+			</Popover.Root>
 
 			<Tooltip.Root>
 				<Tooltip.Trigger>
@@ -781,30 +873,25 @@
 						<Button
 							{...props}
 							variant="ghost"
-							size="icon-xs"
-							disabled={durationSeconds <= 0 ||
-								!canSetEnd ||
-								savePlaybackOffset.pending > 0 ||
-								clearPlaybackOffset.pending > 0 ||
-								saveMatchPlaybackWindow.pending > 0}
-							onclick={() => void setMatchEnd()}
-							aria-label="set match end"
+							size="icon-sm"
+							onclick={() => void toggleFullscreen()}
+							aria-label="full screen"
 						>
-							<ClockArrowRightIcon />
+							<ExpandIcon />
 						</Button>
 					{/snippet}
 				</Tooltip.Trigger>
-				<Tooltip.Content>set match end</Tooltip.Content>
+				<Tooltip.Content>full screen</Tooltip.Content>
 			</Tooltip.Root>
 		</div>
 
-		<span class="w-11 text-right text-xs font-medium text-muted-foreground">
+		<span class="hidden">
 			{formatTime(currentSeconds)}
 		</span>
 		<div
 			class:pointer-events-none={durationSeconds <= 0}
 			class:opacity-50={durationSeconds <= 0}
-			class="video-seek flex-1"
+			class="video-seek order-2 w-full"
 			style:--seek-position={`${seekPosition}%`}
 		>
 			<Slider
@@ -818,7 +905,7 @@
 				ariaValueText={formatTime}
 			/>
 		</div>
-		<span class="w-11 text-xs font-medium text-muted-foreground">
+		<span class="hidden">
 			{formatTime(seekMaxSeconds)}
 		</span>
 	</div>
@@ -831,6 +918,67 @@
 		width: 100%;
 		height: 100%;
 		border: 0;
+	}
+
+	.playback-overlay {
+		/* eased alpha ramp so the scrim fades out instead of ending on a visible edge */
+		--scrim-ramp: linear-gradient(
+			to top,
+			color-mix(in oklab, var(--background) 80%, transparent) 0%,
+			color-mix(in oklab, var(--background) 71%, transparent) 10%,
+			color-mix(in oklab, var(--background) 62%, transparent) 20%,
+			color-mix(in oklab, var(--background) 53%, transparent) 30%,
+			color-mix(in oklab, var(--background) 44%, transparent) 40%,
+			color-mix(in oklab, var(--background) 35%, transparent) 50%,
+			color-mix(in oklab, var(--background) 26%, transparent) 60%,
+			color-mix(in oklab, var(--background) 18%, transparent) 70%,
+			color-mix(in oklab, var(--background) 11%, transparent) 80%,
+			color-mix(in oklab, var(--background) 5%, transparent) 90%,
+			transparent 100%
+		);
+		opacity: 0;
+		transform: translateY(0.5rem);
+		transition:
+			opacity 180ms ease,
+			transform 180ms ease;
+	}
+
+	/* the ramp and its dither live behind the controls so they never tint the buttons */
+	.playback-overlay::before,
+	.playback-overlay::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		z-index: -1;
+		pointer-events: none;
+	}
+
+	.playback-overlay::before {
+		background: var(--scrim-ramp);
+	}
+
+	/* fine grayscale grain breaks up the 8-bit banding the long alpha ramp would otherwise show */
+	.playback-overlay::after {
+		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+		background-size: 160px 160px;
+		opacity: 0.04;
+		mask-image: var(--scrim-ramp);
+		-webkit-mask-image: var(--scrim-ramp);
+	}
+
+	.player-shell:hover .playback-overlay,
+	.player-shell:focus-within .playback-overlay {
+		pointer-events: auto;
+		opacity: 1;
+		transform: translateY(0);
+	}
+
+	@media (hover: none) {
+		.playback-overlay {
+			pointer-events: auto;
+			opacity: 1;
+			transform: translateY(0);
+		}
 	}
 
 	.video-seek {
