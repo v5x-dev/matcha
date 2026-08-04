@@ -35,6 +35,7 @@
 	import { Slider } from 'svelte-awesome-slider';
 	import { onDestroy, onMount } from 'svelte';
 	import { SvelteMap } from 'svelte/reactivity';
+	import { toast } from 'svelte-sonner';
 	import type YoutubePlayer from 'youtube-player';
 
 	type MatchWindow = { startSeconds: number; endSeconds: number };
@@ -146,8 +147,6 @@
 	const matchWindows = new SvelteMap<number, MatchWindow>();
 	const matchStarts = new SvelteMap<number, { videoId: string; startSeconds: number }>();
 	const playbackOffsets = new SvelteMap<string, number | null>();
-	let calibrationError = $state<string | null>(null);
-	let calibrationErrorTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const youtubeUrl = $derived(
 		appliedVideoId
@@ -237,10 +236,12 @@
 	}
 
 	function showCalibrationError(error: unknown) {
-		if (calibrationErrorTimer) clearTimeout(calibrationErrorTimer);
-		const message = error instanceof Error ? error.message : 'calibration could not be saved';
-		calibrationError = message.toLowerCase();
-		calibrationErrorTimer = setTimeout(() => (calibrationError = null), 5000);
+		const description =
+			error instanceof Error && error.message
+				? error.message.toLowerCase()
+				: 'an unexpected error occurred';
+
+		toast.error('calibration could not be saved', { description });
 	}
 
 	function saveCalibration(action: () => Promise<void>) {
@@ -590,7 +591,6 @@
 	onDestroy(() => {
 		updateSequence++;
 		stopProgressPolling();
-		if (calibrationErrorTimer) clearTimeout(calibrationErrorTimer);
 		void player?.destroy();
 	});
 </script>
@@ -960,15 +960,6 @@
 		</div>
 	</div>
 </div>
-
-{#if calibrationError}
-	<div
-		class="fixed right-4 bottom-4 z-50 max-w-sm rounded-2xl border border-destructive/40 bg-background px-4 py-3 text-sm text-destructive shadow-lg"
-		role="alert"
-	>
-		{calibrationError}
-	</div>
-{/if}
 
 <style>
 	/* youtube-player swaps the mount div for an iframe with its own default dimensions */
