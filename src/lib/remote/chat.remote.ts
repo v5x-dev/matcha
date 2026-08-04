@@ -22,19 +22,25 @@ const matchRef = z.object({
 export const listMatchMessages = query(
 	matchRef,
 	async ({ eventId, matchId }): Promise<MatchMessage[]> => {
-		const rows = await db
-			.select({
-				id: matchMessage.id,
-				body: matchMessage.body,
-				createdAt: matchMessage.createdAt,
-				authorId: user.id,
-				authorName: user.name
-			})
-			.from(matchMessage)
-			.innerJoin(user, eq(user.id, matchMessage.userId))
-			.where(and(eq(matchMessage.eventId, eventId), eq(matchMessage.matchId, matchId)))
-			.orderBy(desc(matchMessage.createdAt))
-			.limit(MESSAGE_LIMIT);
+		let rows;
+		try {
+			rows = await db
+				.select({
+					id: matchMessage.id,
+					body: matchMessage.body,
+					createdAt: matchMessage.createdAt,
+					authorId: user.id,
+					authorName: user.name
+				})
+				.from(matchMessage)
+				.innerJoin(user, eq(user.id, matchMessage.userId))
+				.where(and(eq(matchMessage.eventId, eventId), eq(matchMessage.matchId, matchId)))
+				.orderBy(desc(matchMessage.createdAt))
+				.limit(MESSAGE_LIMIT);
+		} catch (error) {
+			console.error(`match ${matchId} chat unavailable; continuing with an empty chat`, error);
+			return [];
+		}
 
 		// read newest-first so the limit keeps the *latest* messages, then flip back to reading order
 		return rows.reverse().map((row) => ({ ...row, createdAt: row.createdAt.getTime() }));

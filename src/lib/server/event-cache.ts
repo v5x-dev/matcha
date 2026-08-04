@@ -560,10 +560,15 @@ async function getEventUncoalesced(id: number): Promise<EventData | null> {
 	const memory = boundedGet(eventMemoryCache, id);
 	if (memory && Date.now() - memory.cachedAt < EVENT_TTL) return memory.data;
 
-	const [row] = await db
-		.select({ data: event.data, cachedAt: event.cachedAt })
-		.from(event)
-		.where(eq(event.id, id));
+	let row: { data: EventData; cachedAt: Date } | undefined;
+	try {
+		[row] = await db
+			.select({ data: event.data, cachedAt: event.cachedAt })
+			.from(event)
+			.where(eq(event.id, id));
+	} catch (error) {
+		console.error(`event ${id} database read unavailable; using the upstream event`, error);
+	}
 
 	if (row && Date.now() - row.cachedAt.getTime() < EVENT_TTL) {
 		boundedSet(
@@ -588,7 +593,11 @@ async function getEventUncoalesced(id: number): Promise<EventData | null> {
 		}
 
 		const fresh = data.getData();
-		await upsertEvents([eventRow(fresh, new Date())]);
+		try {
+			await upsertEvents([eventRow(fresh, new Date())]);
+		} catch (error) {
+			console.error(`event ${id} database write unavailable; keeping the event in memory`, error);
+		}
 		boundedSet(
 			eventMemoryCache,
 			id,
@@ -637,15 +646,21 @@ async function listMatchesUncoalesced(eventId: number): Promise<MatchData[] | nu
 	const ttl = matchesTtl(eventData);
 	const memory = boundedGet(matchMemoryCache, eventId);
 	if (memory && Date.now() - memory.syncedAt < ttl) return memory.data;
-	if (await isFresh(key, ttl)) {
-		const cached = await readCachedMatches(eventId);
-		boundedSet(
-			matchMemoryCache,
-			eventId,
-			{ data: cached, syncedAt: Date.now() },
-			MAX_MATCH_MEMORY_ENTRIES
-		);
-		return cached;
+	let databaseAvailable = true;
+	try {
+		if (await isFresh(key, ttl)) {
+			const cached = await readCachedMatches(eventId);
+			boundedSet(
+				matchMemoryCache,
+				eventId,
+				{ data: cached, syncedAt: Date.now() },
+				MAX_MATCH_MEMORY_ENTRIES
+			);
+			return cached;
+		}
+	} catch (error) {
+		databaseAvailable = false;
+		console.error(`event ${eventId} match cache unavailable; using the upstream schedule`, error);
 	}
 
 	try {
@@ -673,16 +688,23 @@ async function listMatchesUncoalesced(eventId: number): Promise<MatchData[] | nu
 		const matches = results.flat();
 		const cachedAt = new Date();
 
-		await db.transaction(async (tx) => {
-			// divisions and matches can disappear from the schedule, so replace rather than merge
-			await tx.delete(match).where(eq(match.eventId, eventId));
+		try {
+			await db.transaction(async (tx) => {
+				// divisions and matches can disappear from the schedule, so replace rather than merge
+				await tx.delete(match).where(eq(match.eventId, eventId));
 
-			for (const chunk of chunks(matches, 100)) {
-				await tx.insert(match).values(chunk.map((data) => matchRow(data, cachedAt)));
-			}
+				for (const chunk of chunks(matches, 100)) {
+					await tx.insert(match).values(chunk.map((data) => matchRow(data, cachedAt)));
+				}
 
-			await markSynced(key, tx);
-		});
+				await markSynced(key, tx);
+			});
+		} catch (error) {
+			console.error(
+				`event ${eventId} match cache write unavailable; keeping matches in memory`,
+				error
+			);
+		}
 
 		boundedSet(
 			matchMemoryCache,
@@ -693,7 +715,7 @@ async function listMatchesUncoalesced(eventId: number): Promise<MatchData[] | nu
 		return matches;
 	} catch (err) {
 		// an empty match list is a legitimate cached answer, so trust the sync marker, not the rows
-		if ((await syncedAt(key)) !== null) return readCachedMatches(eventId);
+		if (databaseAvailable && (await syncedAt(key)) !== null) return readCachedMatches(eventId);
 		throw err;
 	}
 }

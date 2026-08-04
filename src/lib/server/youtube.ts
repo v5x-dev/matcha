@@ -132,14 +132,20 @@ function cacheTtl(event: EventData) {
 }
 
 async function readEventVideoCache(event: EventData, allowStale = false) {
-	const [sync] = await db
-		.select({
-			syncedAt: eventVideoSync.syncedAt,
-			resultCount: eventVideoSync.resultCount,
-			warnings: eventVideoSync.warnings
-		})
-		.from(eventVideoSync)
-		.where(eq(eventVideoSync.eventId, event.id));
+	let sync: { syncedAt: Date; resultCount: number; warnings: string[] } | undefined;
+	try {
+		[sync] = await db
+			.select({
+				syncedAt: eventVideoSync.syncedAt,
+				resultCount: eventVideoSync.resultCount,
+				warnings: eventVideoSync.warnings
+			})
+			.from(eventVideoSync)
+			.where(eq(eventVideoSync.eventId, event.id));
+	} catch (error) {
+		console.error(`event ${event.id} video cache unavailable; discovering videos upstream`, error);
+		return null;
+	}
 	const failedWithoutVideos = sync?.resultCount === 0 && sync.warnings.length > 0;
 	if (
 		!sync ||
@@ -1102,7 +1108,14 @@ export async function discoverEventVideos(event: EventData): Promise<EventVideoR
 		try {
 			const result = await discoverEventVideosUncoalesced(event, context);
 			context.metrics.resultCount = result.videos.length;
-			await writeEventVideoCache(event.id, result);
+			try {
+				await writeEventVideoCache(event.id, result);
+			} catch (error) {
+				console.error(
+					`event ${event.id} video cache write unavailable; returning discovered videos`,
+					error
+				);
+			}
 			recordDiscoveryTiming(
 				startedAt,
 				event.id,
