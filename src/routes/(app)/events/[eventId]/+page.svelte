@@ -216,6 +216,17 @@
 	const canResetPlaybackOffset = $derived(
 		playback ? hasPlaybackOffset(playback.video.videoId) : false
 	);
+	const boundsSpanSeconds = $derived(Math.max(0, seekMaxSeconds - seekMinSeconds));
+	// the calibration bar spans the match window rather than the whole recording: a match is a couple
+	// of minutes inside a stream that runs for hours, so window-relative is the only readable scale.
+	const boundsPlayhead = $derived(
+		boundsSpanSeconds > 0
+			? clamp(((currentSeconds - seekMinSeconds) / boundsSpanSeconds) * 100, 0, 100)
+			: 0
+	);
+	const isPlayheadInBounds = $derived(
+		durationSeconds > 0 && currentSeconds >= seekMinSeconds && currentSeconds <= seekMaxSeconds
+	);
 
 	function formatTime(value: number): string {
 		const total = Math.max(0, Math.floor(value));
@@ -623,6 +634,7 @@
 	data-stream-day-count={streamDays.length}
 	data-missing-film={missingFilm}
 >
+	<h1 class="sr-only">{event.name.toLowerCase()}</h1>
 	<div
 		class="relative flex min-h-0 flex-1 items-center justify-center bg-background"
 		bind:clientWidth={stageWidth}
@@ -699,7 +711,7 @@
 							{...props}
 							variant="ghost"
 							size="icon-sm"
-							class="hidden sm:inline-flex"
+							class="inline-flex"
 							href={previousMatch ? matchHref(previousMatch.id) : undefined}
 							disabled={!previousMatch}
 							aria-label="previous match"
@@ -718,7 +730,7 @@
 							{...props}
 							variant="ghost"
 							size="icon-sm"
-							class="hidden sm:inline-flex"
+							class="inline-flex"
 							href={nextMatch ? matchHref(nextMatch.id) : undefined}
 							disabled={!nextMatch}
 							aria-label="next match"
@@ -830,36 +842,53 @@
 			<Popover.Root>
 				<Popover.Trigger>
 					{#snippet child({ props })}
-						<Button {...props} variant="ghost" size="icon-sm" aria-label="calibration">
+						<Button
+							{...props}
+							variant="ghost"
+							size="icon-sm"
+							disabled={durationSeconds <= 0 || isDiscoveringVideos || missingFilm}
+							aria-label="calibration"
+						>
 							<SlidersHorizontalIcon />
 						</Button>
 					{/snippet}
 				</Popover.Trigger>
-				<Popover.Content align="start" class="w-84 gap-0 p-0">
-					<Popover.Header class="p-4 pb-3">
-						<div class="flex items-center gap-2.5">
+				<Popover.Content align="start" class="w-88 gap-0 p-0">
+					<Popover.Header class="gap-0 p-4 pb-3">
+						<div class="flex items-start gap-2.5">
 							<span
 								class="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary"
 							>
 								<SlidersHorizontalIcon class="size-4" />
 							</span>
-							<div class="flex flex-col gap-0.5">
+							<div class="flex min-w-0 flex-col gap-0.5">
 								<Popover.Title>calibration</Popover.Title>
 								<Popover.Description class="text-xs">
 									align the recording to the active match
 								</Popover.Description>
 							</div>
 						</div>
+						<div
+							class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-muted/60 px-3 py-2"
+						>
+							<span class="text-xs text-muted-foreground">playhead</span>
+							<span class="text-sm font-medium">{formatTime(currentSeconds)}</span>
+						</div>
+						<p class="mt-2 text-xs text-muted-foreground">
+							every action below applies at the playhead
+						</p>
 					</Popover.Header>
 
 					<div class="flex flex-col gap-3 border-t border-border/60 p-4">
 						<div class="flex items-center justify-between gap-3">
-							<div class="flex flex-col gap-0.5">
-								<p class="font-medium">recording offset</p>
+							<div class="flex min-w-0 flex-col gap-0.5">
+								<p class="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+									recording offset
+								</p>
 								<p class="text-xs text-muted-foreground">applies to every match in this stream</p>
 							</div>
 							<span
-								class="rounded-full px-2 py-0.5 text-xs font-medium {canResetPlaybackOffset
+								class="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium {canResetPlaybackOffset
 									? 'bg-primary/15 text-primary'
 									: 'bg-muted text-muted-foreground'}"
 							>
@@ -868,42 +897,78 @@
 						</div>
 						<div class="flex gap-2">
 							<Button
+								variant="outline"
 								size="sm"
 								class="flex-1"
 								disabled={durationSeconds <= 0 || !canSetStart || savePlaybackOffset.pending > 0}
 								onclick={() => saveCalibration(setPlaybackOffsetHere)}
 							>
-								<ClockArrowLeftIcon /> set here
+								<ClockArrowLeftIcon /> align to playhead
 							</Button>
-							{#if canResetPlaybackOffset}
-								<Button
-									variant="ghost"
-									size="sm"
-									class="text-muted-foreground"
-									disabled={clearPlaybackOffset.pending > 0}
-									onclick={() => saveCalibration(resetPlaybackOffset)}
-								>
-									<TimerResetIcon /> reset
-								</Button>
-							{/if}
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									{#snippet child({ props })}
+										<span {...props} class="inline-flex">
+											<Button
+												variant="ghost"
+												size="icon-sm"
+												class="text-muted-foreground"
+												disabled={!canResetPlaybackOffset || clearPlaybackOffset.pending > 0}
+												onclick={() => saveCalibration(resetPlaybackOffset)}
+												aria-label="reset offset"
+											>
+												<TimerResetIcon />
+											</Button>
+										</span>
+									{/snippet}
+								</Tooltip.Trigger>
+								<Tooltip.Content>reset offset</Tooltip.Content>
+							</Tooltip.Root>
 						</div>
 					</div>
 
 					<div class="flex flex-col gap-3 border-t border-border/60 p-4">
-						<div class="flex flex-col gap-0.5">
-							<p class="font-medium">match bounds</p>
-							<p class="text-xs text-muted-foreground">trim this match to the action</p>
+						<div class="flex items-center justify-between gap-3">
+							<div class="flex min-w-0 flex-col gap-0.5">
+								<p class="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+									match bounds
+								</p>
+								<p class="text-xs text-muted-foreground">trim this match to the action</p>
+							</div>
+							<span
+								class="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+							>
+								{formatTime(boundsSpanSeconds)}
+							</span>
 						</div>
-						<div class="flex items-center gap-3 rounded-xl bg-muted/50 px-3 py-2 text-xs">
-							<div class="flex flex-col">
-								<span class="text-[0.65rem] text-muted-foreground">start</span>
-								<span class="font-medium">{formatTime(seekMinSeconds)}</span>
+						<div class="flex flex-col gap-2">
+							<div class="relative h-1.5 w-full rounded-full bg-muted">
+								{#if isPlayheadInBounds}
+									<div
+										class="absolute inset-y-0 left-0 rounded-full bg-primary/60"
+										style="width: {boundsPlayhead}%;"
+									></div>
+									<div
+										class="absolute -top-1 -ml-px h-3.5 w-0.5 rounded-full bg-foreground"
+										style="left: {boundsPlayhead}%;"
+									></div>
+								{/if}
 							</div>
-							<span class="h-px flex-1 bg-border"></span>
-							<div class="flex flex-col items-end">
-								<span class="text-[0.65rem] text-muted-foreground">end</span>
-								<span class="font-medium">{formatTime(seekMaxSeconds)}</span>
+							<div class="flex items-baseline justify-between gap-3 text-xs">
+								<span class="text-muted-foreground">
+									start <span class="ml-0.5 font-medium text-foreground">
+										{formatTime(seekMinSeconds)}
+									</span>
+								</span>
+								<span class="text-muted-foreground">
+									<span class="mr-0.5 font-medium text-foreground">
+										{formatTime(seekMaxSeconds)}
+									</span> end
+								</span>
 							</div>
+							{#if durationSeconds > 0 && !isPlayheadInBounds}
+								<p class="text-xs text-muted-foreground">the playhead sits outside these bounds</p>
+							{/if}
 						</div>
 						<div class="grid grid-cols-2 gap-2">
 							<Button
@@ -936,6 +1001,7 @@
 							{...props}
 							variant="ghost"
 							size="icon-sm"
+							disabled={durationSeconds <= 0 || isDiscoveringVideos || missingFilm}
 							onclick={() => void toggleFullscreen()}
 							aria-label="full screen"
 						>

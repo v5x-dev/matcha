@@ -1,4 +1,4 @@
-import { and, count, eq, gt, gte, inArray, isNotNull, lt, lte, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, gte, inArray, isNotNull, lt, lte, or, sql } from 'drizzle-orm';
 import { Event, type EventData, type MatchData } from 'events.vex';
 import type {
 	EventFacet,
@@ -35,6 +35,7 @@ const matchesKey = (eventId: number) => `matches:event:${eventId}`;
 const eventMemoryCache = new Map<number, { data: EventData; cachedAt: number }>();
 const eventSearchMemoryCache = new Map<string, { data: EventSearchResult; cachedAt: number }>();
 const eventListMemoryCache: { syncedAt: number } = { syncedAt: 0 };
+let eventDatabaseReady = false;
 const matchMemoryCache = new Map<number, { data: MatchData[]; syncedAt: number; ttlMs: number }>();
 const pendingEventRequests = new Map<number, Promise<EventData | null>>();
 const pendingMatchRequests = new Map<number, Promise<MatchData[] | null>>();
@@ -247,6 +248,7 @@ async function unlistEvents(before: Date, tx: Executor) {
 }
 
 const NULL_EVENT_SORT = '9999-12-31T23:59:59.999Z';
+const NULL_EVENT_SORT_DESC = '0000-01-01T00:00:00.000Z';
 
 type EventCursor = { start: string; id: number };
 
@@ -268,8 +270,15 @@ function decodeCursor(cursor: string | null | undefined): EventCursor | null {
 	}
 }
 
-function eventSortStart() {
-	return sql<string>`coalesce(${event.start}, ${NULL_EVENT_SORT})`;
+type EventSortDirection = 'asc' | 'desc';
+
+function sortDirection(input: EventSearchInput): EventSortDirection {
+	return input.timeframe === 'upcoming' || input.timeframe === 'ongoing' ? 'asc' : 'desc';
+}
+
+function eventSortStart(direction: EventSortDirection = 'asc') {
+	const nullValue = direction === 'desc' ? NULL_EVENT_SORT_DESC : NULL_EVENT_SORT;
+	return sql<string>`coalesce(${event.start}, ${nullValue})`;
 }
 
 function searchTerms(value: string): string[] {
@@ -340,17 +349,23 @@ async function searchEventsWithoutDatabase(input: EventSearchInput): Promise<Eve
 		]
 			.map(([value, count]) => ({ value, count }))
 			.sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+	const direction = sortDirection(input);
+	const nullSort = direction === 'desc' ? NULL_EVENT_SORT_DESC : NULL_EVENT_SORT;
+	const sortValue = (item: EventData) => item.start ?? nullSort;
 	const filtered = fallbackEventList.events
 		.filter((item) => matches(item))
-		.sort(
-			(a, b) =>
-				(a.start ?? NULL_EVENT_SORT).localeCompare(b.start ?? NULL_EVENT_SORT) || a.id - b.id
-		);
+		.sort((a, b) => {
+			const byStart = sortValue(a).localeCompare(sortValue(b));
+			if (byStart !== 0) return direction === 'desc' ? -byStart : byStart;
+			return direction === 'desc' ? b.id - a.id : a.id - b.id;
+		});
 	const cursor = decodeCursor(input.cursor);
 	const afterCursor = cursor
 		? filtered.filter((item) => {
-				const start = item.start ?? NULL_EVENT_SORT;
-				return start > cursor.start || (start === cursor.start && item.id > cursor.id);
+				const start = sortValue(item);
+				return direction === 'desc'
+					? start < cursor.start || (start === cursor.start && item.id < cursor.id)
+					: start > cursor.start || (start === cursor.start && item.id > cursor.id);
 			})
 		: filtered;
 	const limit = Math.max(1, Math.min(input.limit ?? INITIAL_EVENT_PAGE_SIZE, MAX_EVENT_PAGE_SIZE));
@@ -362,7 +377,7 @@ async function searchEventsWithoutDatabase(input: EventSearchInput): Promise<Eve
 		total: filtered.length,
 		nextCursor:
 			afterCursor.length > limit && last
-				? encodeCursor({ start: last.start ?? NULL_EVENT_SORT, id: last.id })
+				? encodeCursor({ start: sortValue(last), id: last.id })
 				: null,
 		facets: {
 			levels: facet(
@@ -399,10 +414,12 @@ function eventWhere(input: EventSearchInput, without?: 'levels' | 'regions') {
 	return and(...conditions);
 }
 
-function cursorWhere(cursor: EventCursor | null) {
+function cursorWhere(cursor: EventCursor | null, direction: EventSortDirection) {
 	if (!cursor) return undefined;
-	const sortStart = eventSortStart();
-	return or(gt(sortStart, cursor.start), and(eq(sortStart, cursor.start), gt(event.id, cursor.id)));
+	const sortStart = eventSortStart(direction);
+	return direction === 'desc'
+		? or(lt(sortStart, cursor.start), and(eq(sortStart, cursor.start), lt(event.id, cursor.id)))
+		: or(gt(sortStart, cursor.start), and(eq(sortStart, cursor.start), gt(event.id, cursor.id)));
 }
 
 async function hasCachedEventListing() {
@@ -424,10 +441,12 @@ async function ensureEventListing(): Promise<void> {
 
 	if (await isFresh(eventListKey, EVENT_LIST_TTL)) {
 		eventListMemoryCache.syncedAt = Date.now();
+		eventDatabaseReady = true;
 		return;
 	}
 
 	if (pendingEventListRequest) return pendingEventListRequest;
+	const hasCache = await hasCachedEventListing();
 
 	const request = (async () => {
 		try {
@@ -447,6 +466,35 @@ async function ensureEventListing(): Promise<void> {
 
 			const events = data.map((item) => item.getData());
 			const cachedAt = new Date();
+			fallbackEventList = { events, fetchedAt: Date.now() };
+
+			// A completely cold database should not make the first usable list wait for every insert.
+			// The upstream result is already a valid read model; persist it in the background and let the
+			// caller use the fallback while the index catches up.
+			if (!hasCache) {
+				eventListMemoryCache.syncedAt = Date.now();
+				eventDatabaseReady = false;
+				const persist = (async () => {
+					await db.transaction(async (tx) => {
+						await upsertEvents(
+							events.map((data) => eventRow(data, cachedAt, cachedAt)),
+							tx
+						);
+						await unlistEvents(cachedAt, tx);
+						await markSynced(eventListKey, tx);
+					});
+					eventDatabaseReady = true;
+					eventMemoryCache.clear();
+					eventSearchMemoryCache.clear();
+				})().catch((error) => {
+					console.error(
+						'event database index persistence failed; keeping upstream fallback',
+						error
+					);
+				});
+				void persist;
+				return;
+			}
 
 			await db.transaction(async (tx) => {
 				await upsertEvents(
@@ -459,11 +507,13 @@ async function ensureEventListing(): Promise<void> {
 			eventMemoryCache.clear();
 			eventSearchMemoryCache.clear();
 			eventListMemoryCache.syncedAt = Date.now();
+			eventDatabaseReady = true;
 		} catch (error) {
 			// stale rows are still useful when the upstream index is unavailable; an empty database is
 			// the only case where the failure should reach the page.
 			if (!(await hasCachedEventListing())) throw error;
 			eventListMemoryCache.syncedAt = Date.now();
+			eventDatabaseReady = true;
 		}
 	})();
 
@@ -508,6 +558,16 @@ export async function searchEvents(input: EventSearchInput): Promise<EventSearch
 				);
 				return result;
 			}
+			if (!eventDatabaseReady && fallbackEventList) {
+				const result = await searchEventsWithoutDatabase(input);
+				boundedSet(
+					eventSearchMemoryCache,
+					cacheKey,
+					{ data: result, cachedAt: Date.now() },
+					MAX_EVENT_MEMORY_ENTRIES
+				);
+				return result;
+			}
 			const limit = Math.max(
 				1,
 				Math.min(input.limit ?? INITIAL_EVENT_PAGE_SIZE, MAX_EVENT_PAGE_SIZE)
@@ -516,14 +576,18 @@ export async function searchEvents(input: EventSearchInput): Promise<EventSearch
 			const levelFacetWhere = eventWhere(input, 'levels');
 			const regionFacetWhere = eventWhere(input, 'regions');
 			const cursor = decodeCursor(input.cursor);
-			const where = and(baseWhere, cursorWhere(cursor));
+			const direction = sortDirection(input);
+			const where = and(baseWhere, cursorWhere(cursor, direction));
 
 			const [rows, totalRows, levelRows, regionRows] = await Promise.all([
 				db
 					.select(eventProjection)
 					.from(event)
 					.where(where)
-					.orderBy(eventSortStart(), event.id)
+					.orderBy(
+						direction === 'desc' ? desc(eventSortStart(direction)) : eventSortStart(direction),
+						direction === 'desc' ? desc(event.id) : event.id
+					)
 					.limit(limit + 1),
 				db.select({ count: count() }).from(event).where(baseWhere),
 				db
@@ -546,7 +610,11 @@ export async function searchEvents(input: EventSearchInput): Promise<EventSearch
 				total: Number(totalRows[0]?.count ?? 0),
 				nextCursor:
 					hasMore && last
-						? encodeCursor({ start: last.start ?? NULL_EVENT_SORT, id: last.id })
+						? encodeCursor({
+								start:
+									last.start ?? (direction === 'desc' ? NULL_EVENT_SORT_DESC : NULL_EVENT_SORT),
+								id: last.id
+							})
 						: null,
 				facets: {
 					levels: levelRows

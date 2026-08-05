@@ -7,8 +7,10 @@
 	import { eventRoundGroups } from '$lib/match-navigation';
 	import { activeMatchId, requestMatchRestart } from '$lib/match-param.svelte';
 	import { groupMatchesByStreamDay } from '$lib/stream-days';
+	import { Input } from '$lib/components/ui/input';
 	import type { EventData, MatchData } from 'events.vex';
 	import { createVirtualizer } from '@tanstack/svelte-virtual';
+	import Fuse from 'fuse.js';
 	import { watch } from 'runed';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { slide } from 'svelte/transition';
@@ -32,9 +34,39 @@
 	const activeMatchData = $derived(matches.find((match) => match.id === activeMatch) ?? null);
 
 	let tab = $state('matches');
+	let matchQuery = $state('');
 
 	function sortMatches(a: MatchData, b: MatchData): number {
 		return a.instance - b.instance || a.matchnum - b.matchnum;
+	}
+
+	function matchSearchText(match: MatchData): string {
+		return [
+			match.name,
+			match.division.name,
+			match.field,
+			...match.alliances.flatMap((alliance) =>
+				alliance.teams.map((allianceTeam) => allianceTeam.team?.name)
+			)
+		]
+			.filter((value): value is string => Boolean(value))
+			.join(' ')
+			.toLowerCase();
+	}
+
+	function matchDetails(match: MatchData): string {
+		const teams = match.alliances
+			.flatMap((alliance) => alliance.teams.map((allianceTeam) => allianceTeam.team?.name))
+			.filter((value): value is string => Boolean(value));
+		return [match.division.name, match.field, teams.join(' · ')]
+			.filter((value): value is string => Boolean(value))
+			.join(' · ')
+			.toLowerCase();
+	}
+
+	function matchAccessibleLabel(match: MatchData): string {
+		const details = matchDetails(match);
+		return [match.name.toLowerCase(), details].filter(Boolean).join(' · ');
 	}
 
 	const sidebar = Sidebar.useSidebar();
@@ -72,8 +104,24 @@
 
 	// Sort each section once, then bucket matches by round. The old rendering path filtered and
 	// sorted the same section once for every possible round.
+	const filteredSections = $derived.by(() => {
+		const query = matchQuery.trim();
+		if (!query) return sections;
+		const fuse = new Fuse(
+			matches.map((match) => ({ id: match.id, text: matchSearchText(match) })),
+			{ keys: ['text'], threshold: 0.35, ignoreLocation: true }
+		);
+		const ids = new Set(fuse.search(query).map((result) => result.item.id));
+		return sections
+			.map((section) => ({
+				...section,
+				matches: section.matches.filter((match) => ids.has(match.id))
+			}))
+			.filter((section) => section.matches.length > 0);
+	});
+
 	const groups = $derived.by(() =>
-		sections.flatMap((section) => {
+		filteredSections.flatMap((section) => {
 			const byRound = new SvelteMap<number, MatchData[]>();
 			for (const match of [...section.matches].sort(sortMatches)) {
 				const bucket = byRound.get(match.round) ?? [];
@@ -138,7 +186,7 @@
 	const virtualizer = createVirtualizer<HTMLElement, HTMLDivElement>({
 		count: 0,
 		getScrollElement: () => viewportRef,
-		estimateSize: () => 34,
+		estimateSize: () => 52,
 		overscan: 8,
 		paddingEnd: 8,
 		gap: 2,
@@ -199,9 +247,17 @@
 					>
 				{/snippet}
 			</Sidebar.MenuButton>
-			<p class="px-2 text-sm leading-5 font-medium text-muted-foreground">
+			<p class="px-2 text-sm leading-5 font-medium text-sidebar-foreground!">
 				{event.name.split(':')[0].toLowerCase()}
 			</p>
+			<div class="px-2">
+				<Input
+					bind:value={matchQuery}
+					placeholder="search matches or teams..."
+					aria-label="search matches or teams"
+					class="text-sidebar-foreground placeholder:text-sidebar-foreground"
+				/>
+			</div>
 			<Tabs.List class="w-full">
 				<Tooltip.Root>
 					<Tooltip.Trigger>
@@ -239,8 +295,13 @@
 				style="overflow-y: scroll;"
 			>
 				<div class="relative w-full shrink-0" style="height: {$virtualizer.getTotalSize()}px;">
+					{#if rows.length === 0}
+						<p class="px-3 py-6 text-center text-xs text-sidebar-foreground!">no matches found</p>
+					{/if}
 					{#if stickyHeading}
-						<Sidebar.GroupLabel class="sticky top-0 z-20 rounded-none bg-sidebar">
+						<Sidebar.GroupLabel
+							class="sticky top-0 z-20 rounded-none bg-sidebar text-sidebar-foreground!"
+						>
 							{stickyHeading.label}
 						</Sidebar.GroupLabel>
 					{/if}
@@ -255,12 +316,13 @@
 							>
 								{#if row.type === 'heading'}
 									<Sidebar.GroupLabel
-										class={virtualRow.index === stickyHeadingIndex ? 'invisible' : ''}
-										>{row.label}</Sidebar.GroupLabel
+										class="{virtualRow.index === stickyHeadingIndex
+											? 'invisible '
+											: ''}text-sidebar-foreground!">{row.label}</Sidebar.GroupLabel
 									>
 								{:else}
 									<Sidebar.MenuButton
-										class="h-8 items-center gap-2 px-3 py-2 transition-colors duration-150 data-active:h-auto data-active:bg-sidebar-accent data-active:py-2.5"
+										class="h-auto min-h-8 items-center gap-2 px-3 py-2 transition-colors duration-150 data-active:bg-sidebar-accent data-active:py-2.5"
 										isActive={row.match.id === activeMatch}
 									>
 										{#snippet child({ props })}
@@ -272,6 +334,7 @@
 															eventId: eventId.toString()
 														})}
 														aria-current={row.match.id === activeMatch ? 'page' : undefined}
+														aria-label={matchAccessibleLabel(row.match)}
 														onclick={(event) => handleMatchClick(event, row.match.id)}
 													>
 														<span class="min-w-0 truncate font-medium">
@@ -281,10 +344,10 @@
 													{#if row.match.id === activeMatch}
 														<div class="grid gap-1" in:slide={{ duration: 180 }}>
 															<span class="flex min-w-0 items-center gap-1 text-xs">
-																<span class="w-5 shrink-0 font-semibold text-blue-400">
+																<span class="w-5 shrink-0 font-semibold text-blue-300">
 																	{allianceScore(row.match, 'blue')}
 																</span>
-																<span class="truncate text-muted-foreground">
+																<span class="truncate text-sidebar-foreground!">
 																	{#each allianceTeams(row.match, 'blue') as team, index (team)}
 																		{#if index > 0}<span aria-hidden="true">&nbsp;·&nbsp;</span
 																			>{/if}
@@ -296,10 +359,10 @@
 																</span>
 															</span>
 															<span class="flex min-w-0 items-center gap-1 text-xs">
-																<span class="w-5 shrink-0 font-semibold text-red-400">
+																<span class="w-5 shrink-0 font-semibold text-red-200">
 																	{allianceScore(row.match, 'red')}
 																</span>
-																<span class="truncate text-muted-foreground">
+																<span class="truncate text-sidebar-foreground!">
 																	{#each allianceTeams(row.match, 'red') as team, index (team)}
 																		{#if index > 0}<span aria-hidden="true">&nbsp;·&nbsp;</span
 																			>{/if}

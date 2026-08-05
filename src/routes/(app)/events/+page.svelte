@@ -12,11 +12,14 @@
 	} from '$lib/client/performance';
 	import { Badge } from '$lib/components/ui/badge';
 	import EventFiltersSheet from './event-filters-sheet.svelte';
-	import { EventFilters } from './event-filters.svelte';
+	import { EventFilters, levels, timeframes } from './event-filters.svelte';
+	import { page } from '$app/state';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import XIcon from '@lucide/svelte/icons/x';
 	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
+	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import { onMount } from 'svelte';
+	import { SvelteURLSearchParams } from 'svelte/reactivity';
 
 	const rangeFormatter = new Intl.DateTimeFormat('en-US', {
 		month: 'short',
@@ -25,6 +28,63 @@
 	});
 
 	const filters = new EventFilters();
+	const validLevels = new Set(levels);
+	const validTimeframes = new Set(timeframes.map((timeframe) => timeframe.value));
+
+	function readFiltersFromUrl(search: string) {
+		const params = new SvelteURLSearchParams(search);
+		filters.query = params.get('q') ?? '';
+		filters.levels = params
+			.getAll('level')
+			.filter((level): level is (typeof levels)[number] =>
+				validLevels.has(level as (typeof levels)[number])
+			);
+		filters.regions = params.getAll('region').filter(Boolean);
+		const timeframe = params.get('time');
+		filters.timeframe = validTimeframes.has(timeframe as (typeof timeframes)[number]['value'])
+			? (timeframe as (typeof timeframes)[number]['value'])
+			: 'any';
+	}
+
+	readFiltersFromUrl(page.url.search);
+	let lastUrlSearch = page.url.search;
+	let urlTimer: ReturnType<typeof setTimeout> | undefined;
+	let restoredScroll = false;
+
+	function filterSearch() {
+		const params = new SvelteURLSearchParams();
+		if (filters.query.trim()) params.set('q', filters.query.trim());
+		for (const level of filters.levels) params.append('level', level);
+		for (const region of filters.regions) params.append('region', region);
+		if (filters.timeframe !== 'any') params.set('time', filters.timeframe);
+		const search = params.toString();
+		return search ? `?${search}` : '';
+	}
+
+	// Keep the scout's query in the history entry so opening an event and pressing Back restores the
+	// same results. replaceState avoids adding one browser-history entry per typed character.
+	$effect(() => {
+		const search = filterSearch();
+		if (search === lastUrlSearch || typeof window === 'undefined') return;
+		if (urlTimer) clearTimeout(urlTimer);
+		urlTimer = setTimeout(() => {
+			const nextUrl = `${window.location.pathname}${search}${window.location.hash}`;
+			window.history.replaceState(window.history.state, '', nextUrl);
+			lastUrlSearch = search;
+		}, 120);
+		return () => {
+			if (urlTimer) clearTimeout(urlTimer);
+		};
+	});
+
+	// SvelteKit updates page.url when the browser goes Back to this route. Rehydrate the local draft
+	// from it so a same-route history traversal also restores the search state.
+	$effect(() => {
+		const search = page.url.search;
+		if (search === lastUrlSearch) return;
+		lastUrlSearch = search;
+		readFiltersFromUrl(search);
+	});
 	let filtersOpen = $state(false);
 	let result = $state<EventSearchResult | null>(null);
 	const emptyResult: EventSearchResult = {
@@ -61,6 +121,7 @@
 		hasRequested = true;
 		if (requestTimer) clearTimeout(requestTimer);
 		isLoading = true;
+		viewportRef?.scrollTo({ top: 0 });
 		requestTimer = setTimeout(() => {
 			const metric = startBrowserMetric('event-list.search-latency', {
 				queryLength: input.query.trim().length,
@@ -150,13 +211,33 @@
 			.join(', ')
 			.toLowerCase();
 	}
+
+	function saveScrollPosition() {
+		if (typeof window === 'undefined' || !viewportRef) return;
+		window.sessionStorage.setItem(
+			`matcha.events.scroll:${window.location.search}`,
+			String(viewportRef.scrollTop)
+		);
+	}
+
+	$effect(() => {
+		const viewport = viewportRef;
+		if (restoredScroll || !viewport || events.length === 0 || typeof window === 'undefined') return;
+		restoredScroll = true;
+		const saved = Number(
+			window.sessionStorage.getItem(`matcha.events.scroll:${window.location.search}`)
+		);
+		if (Number.isFinite(saved) && saved > 0)
+			requestAnimationFrame(() => viewport.scrollTo({ top: saved }));
+	});
 </script>
 
 <svelte:head>
 	<title>events · matcha</title>
 </svelte:head>
 
-<div class="flex h-full flex-col gap-0">
+<div class="flex h-full flex-col gap-0" inert={filtersOpen}>
+	<h1 class="sr-only">events</h1>
 	<div class="p-2">
 		<InputGroup.Root>
 			<InputGroup.Addon>
@@ -191,14 +272,20 @@
 
 	<div class="relative min-h-0 flex-1">
 		{#if isLoading}
-			<p
-				class="absolute inset-x-0 top-0 mr-2 px-2 py-6 text-center text-sm text-muted-foreground"
+			<div
+				class="pointer-events-none absolute inset-x-0 top-2 z-10 mx-4 flex items-center justify-center gap-2 rounded-full bg-background/85 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur"
 				aria-live="polite"
 			>
+				<LoaderCircleIcon class="size-3.5 animate-spin" />
 				{result ? 'searching events...' : 'loading events...'}
-			</p>
+			</div>
 		{/if}
-		<div class={['mr-2 h-full overflow-y-auto', isLoading && 'invisible']} bind:this={viewportRef}>
+		<div
+			class="mr-2 h-full overflow-y-auto"
+			bind:this={viewportRef}
+			onscroll={saveScrollPosition}
+			aria-busy={isLoading}
+		>
 			<div class="space-y-2 pr-4 pl-2">
 				{#each events as event (event.id)}
 					{@const location = formatLocation(event)}

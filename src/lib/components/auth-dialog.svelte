@@ -226,8 +226,8 @@
 					{:else if sentJustNow}
 						we sent a confirmation link to {awaitingEmail.toLowerCase()}. open it and you are in.
 					{:else}
-						confirm {awaitingEmail.toLowerCase()} before you sign in. open the link we already sent,
-						or ask for a fresh one.
+						confirm {awaitingEmail.toLowerCase()} before you sign in. open the link we already sent, or
+						ask for a fresh one.
 					{/if}
 				</Dialog.Description>
 			</Dialog.Header>
