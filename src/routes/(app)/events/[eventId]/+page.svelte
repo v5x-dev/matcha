@@ -624,11 +624,18 @@
 	data-missing-film={missingFilm}
 >
 	<div
-		class="flex min-h-0 flex-1 items-center justify-center bg-background"
+		class="relative flex min-h-0 flex-1 items-center justify-center bg-background"
 		bind:clientWidth={stageWidth}
 		bind:clientHeight={stageHeight}
 	>
-		<div style="width: {frameWidth}px; height: {frameHeight}px;">
+		<button
+			type="button"
+			class="absolute inset-0 z-0 border-0 bg-transparent p-0 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring"
+			disabled={durationSeconds <= 0 || isDiscoveringVideos || missingFilm}
+			onclick={() => void togglePlayback()}
+			aria-label={isPlaying ? 'pause video' : 'play video'}
+		></button>
+		<div class="relative z-10" style="width: {frameWidth}px; height: {frameHeight}px;">
 			<div class="h-full w-full" id="youtube-player"></div>
 		</div>
 	</div>
