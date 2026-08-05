@@ -1,3 +1,4 @@
+import { get } from 'node:https';
 import { YOUTUBE_API_KEY } from '$env/static/private';
 import type { EventData } from 'events.vex';
 import { eq } from 'drizzle-orm';
@@ -57,6 +58,12 @@ type DiscoveredReference = {
 	confidence: number;
 };
 
+/** a title test plus a key identifying it, so coalesced requests only share an identical filter. */
+type TitleFilter = {
+	key: string;
+	test: (title: string) => boolean;
+};
+
 type DiscoveryMetrics = {
 	youtubeRequests: number;
 	cacheLookups: number;
@@ -109,7 +116,6 @@ type YouTubeVideo = {
 		thumbnails?: Record<string, YouTubeThumbnail>;
 	};
 	contentDetails?: { duration?: string };
-	status?: { privacyStatus?: string; embeddable?: boolean };
 	liveStreamingDetails?: {
 		actualStartTime?: string;
 		actualEndTime?: string;
@@ -432,7 +438,8 @@ export async function getYouTubeVideos(
 		const response = await youtubeRequest<YouTubeVideo>(
 			'videos',
 			{
-				part: 'snippet,contentDetails,status,liveStreamingDetails',
+				// nothing reads `status`, and every part asked for is more of a response to parse
+				part: 'snippet,contentDetails,liveStreamingDetails',
 				id: ids.join(',')
 			},
 			context
@@ -512,15 +519,17 @@ export async function listChannelUploadIds({
 	publishedAfter,
 	publishedBefore,
 	maxPages = MAX_CHANNEL_UPLOAD_PAGES,
+	keepTitle,
 	context
 }: {
 	channelId: string;
 	publishedAfter: string;
 	publishedBefore: string;
 	maxPages?: number;
+	keepTitle?: TitleFilter;
 	context?: DiscoveryContext;
 }) {
-	const requestKey = `${channelId}:${publishedAfter}:${publishedBefore}:${maxPages}`;
+	const requestKey = `${channelId}:${publishedAfter}:${publishedBefore}:${maxPages}:${keepTitle?.key ?? ''}`;
 	const pending = pendingChannelUploads.get(requestKey);
 	if (pending) return pending;
 
@@ -529,6 +538,7 @@ export async function listChannelUploadIds({
 		publishedAfter,
 		publishedBefore,
 		maxPages,
+		keepTitle,
 		context
 	});
 	pendingChannelUploads.set(requestKey, request);
@@ -544,12 +554,14 @@ async function listChannelUploadIdsUncoalesced({
 	publishedAfter,
 	publishedBefore,
 	maxPages,
+	keepTitle,
 	context
 }: {
 	channelId: string;
 	publishedAfter: string;
 	publishedBefore: string;
 	maxPages: number;
+	keepTitle?: TitleFilter;
 	context?: DiscoveryContext;
 }) {
 	// the uploads playlist of a channel is its id with the channel prefix swapped for the playlist one
@@ -563,11 +575,14 @@ async function listChannelUploadIdsUncoalesced({
 
 	for (let page = 0; page < maxPages; page += 1) {
 		const response = await youtubeRequest<{
+			snippet?: { title?: string };
 			contentDetails?: { videoId?: string; videoPublishedAt?: string };
 		}>(
 			'playlistItems',
 			{
-				part: 'contentDetails',
+				// a playlist page costs the same with or without titles, and a title read here saves a
+				// whole hydration request for every fifty uploads it rules out
+				part: `contentDetails${keepTitle ? ',snippet' : ''}`,
 				playlistId,
 				maxResults: '50',
 				...(pageToken ? { pageToken } : {})
@@ -582,14 +597,19 @@ async function listChannelUploadIdsUncoalesced({
 			if (!id) continue;
 
 			const at = Date.parse(item.contentDetails?.videoPublishedAt ?? '');
-			// an undated entry is cheap to hydrate and gets filtered on its own timestamps later
-			if (!Number.isFinite(at)) {
-				videoIds.push(id);
+			const dated = Number.isFinite(at);
+
+			// a date outside the window ends the page walk even when the title would have been kept
+			if (dated && at < after) {
+				passedWindow = true;
 				continue;
 			}
+			if (dated && at > before) continue;
 
-			if (at < after) passedWindow = true;
-			else if (at <= before) videoIds.push(id);
+			// an untitled entry is cheap to hydrate and gets judged on the video's own title later
+			if (keepTitle && item.snippet?.title && !keepTitle.test(item.snippet.title)) continue;
+
+			videoIds.push(id);
 		}
 
 		pageToken = response.nextPageToken;
@@ -626,25 +646,62 @@ export function extractYouTubeVideoIds(html: string) {
 	return [...new Set([...matches].map((match) => match[1]))];
 }
 
+const VEX_PAGE_TIMEOUT_MS = 10_000;
+const VEX_PAGE_HEADERS = {
+	accept: 'text/html,application/xhtml+xml',
+	// cloudflare answers a request carrying no user-agent at all with the challenge, whatever client
+	// asked, so the honest one we would have sent anyway has to be sent
+	'user-agent': 'matcha event media indexer/1.0'
+};
+
+/**
+ * the vex pages sit behind a cloudflare bot check that turns away `fetch` — undici — on the shape of
+ * its connection rather than on anything in the request, so no combination of headers gets through
+ * it. node's own http/1.1 client is let past with the same headers, and is the only reason these
+ * pages are readable; http/2 is refused as well, so this must stay on `node:https`.
+ */
+function fetchOverHttp1(url: string, deadline: number, redirectsLeft = 5): Promise<string> {
+	const remaining = deadline - Date.now();
+	if (remaining <= 0) return Promise.reject(new Error('vex webcast page timed out'));
+
+	return new Promise((resolve, reject) => {
+		const request = get(url, { headers: VEX_PAGE_HEADERS, timeout: remaining }, (response) => {
+			const status = response.statusCode ?? 0;
+			const location = response.headers.location;
+
+			// the sku url redirects to the event's program path, so a redirect is the normal case here
+			if (status >= 300 && status < 400 && location) {
+				response.resume();
+				if (redirectsLeft === 0) {
+					reject(new Error('vex webcast page redirected too many times'));
+					return;
+				}
+				resolve(fetchOverHttp1(new URL(location, url).toString(), deadline, redirectsLeft - 1));
+				return;
+			}
+
+			if (status < 200 || status >= 300) {
+				response.resume();
+				reject(new Error(`vex webcast page returned ${status}`));
+				return;
+			}
+
+			let body = '';
+			response.setEncoding('utf8');
+			response.on('data', (chunk) => (body += chunk));
+			response.on('end', () => resolve(body));
+			response.on('error', reject);
+		});
+
+		request.on('timeout', () => request.destroy(new Error('vex webcast page timed out')));
+		request.on('error', reject);
+	});
+}
+
 async function fetchVexPage(url: string) {
 	return measureExternalRequest(
 		'vex.webcast.page',
-		async () => {
-			const response = await fetch(url, {
-				headers: {
-					accept: 'text/html,application/xhtml+xml',
-					'user-agent': 'matcha event media indexer/1.0'
-				},
-				redirect: 'follow',
-				signal: AbortSignal.timeout(5_000)
-			});
-
-			if (!response.ok) {
-				throw new Error(`vex webcast page returned ${response.status}`);
-			}
-
-			return response.text();
-		},
+		() => fetchOverHttp1(url, Date.now() + VEX_PAGE_TIMEOUT_MS),
 		{ url }
 	);
 }
@@ -1038,6 +1095,12 @@ async function discoverEventVideosUncoalesced(
 			});
 		}
 
+		// the same test the discovered videos are held to below, moved forward onto the playlist titles
+		const keepTitle: TitleFilter = {
+			key: event.program.code ?? '',
+			test: (title) => matchesEventProgram(title, event)
+		};
+
 		const channelVideos = await Promise.all(
 			[...channelIds].slice(0, MAX_CHANNELS).map(async ([channelId, reference]) => {
 				try {
@@ -1045,6 +1108,7 @@ async function discoverEventVideosUncoalesced(
 						channelId,
 						publishedAfter: windows.publishedAfter,
 						publishedBefore: windows.publishedBefore,
+						keepTitle,
 						context
 					});
 					const urls = new Map(ids.map((id) => [id, reference.sourceUrl]));

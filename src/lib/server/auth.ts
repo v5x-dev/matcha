@@ -5,6 +5,7 @@ import { getRequestEvent } from '$app/server';
 import { env } from '$env/dynamic/private';
 import { db } from './db';
 import * as schema from './db/schema';
+import { sendEmail, verificationEmail } from './email';
 
 if (!env.BETTER_AUTH_SECRET) throw new Error('BETTER_AUTH_SECRET is not set');
 
@@ -22,9 +23,21 @@ export const auth = betterAuth({
 	}),
 	emailAndPassword: {
 		enabled: true,
-		// nobody is sending mail from this app yet, so a verification gate would just lock people out
-		requireEmailVerification: false,
+		requireEmailVerification: true,
+		// sign-up would otherwise hand out a session before the address is confirmed, which is the
+		// exact thing `requireEmailVerification` is there to stop
+		autoSignIn: false,
 		minPasswordLength: 8
+	},
+	emailVerification: {
+		sendOnSignUp: true,
+		// the dialog resends with its own callback url when a sign-in is turned away, so letting
+		// better-auth also send from here would put two near-identical links in the inbox
+		sendOnSignIn: false,
+		autoSignInAfterVerification: true,
+		async sendVerificationEmail({ user, url }) {
+			await sendEmail(verificationEmail({ to: user.email, name: user.name, url }));
+		}
 	},
 	user: {
 		// the display name doubles as the chat handle, so it is worth keeping changeable
