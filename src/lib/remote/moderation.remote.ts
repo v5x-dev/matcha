@@ -1,16 +1,18 @@
 import { command, getRequestEvent, query } from '$app/server';
 import { httpError } from '$lib/server/http-error';
-import { and, count, desc, eq, gt, isNull, max, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNotNull, isNull, max, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '$lib/server/db';
 import { matchMessage, messageReport, user, userSanction } from '$lib/server/db/schema';
 import type { UserRole } from '$lib/server/db/schema';
 import {
 	canModerate,
+	countModerationQueue,
 	isAdmin,
 	issueSanction,
 	liftSanctions,
 	loadActor,
+	moderationIsUnstaffed,
 	recentStrikes,
 	roleOf,
 	type Actor
@@ -33,17 +35,41 @@ async function requireAdmin(): Promise<Actor> {
 	return actor;
 }
 
-/** whether the current viewer should see the moderation tools at all. */
-export const moderationAccess = query(
-	async (): Promise<{ canModerate: boolean; isAdmin: boolean }> => {
-		const { locals } = getRequestEvent();
-		if (!locals.user) return { canModerate: false, isAdmin: false };
+export type ModerationAccess = {
+	canModerate: boolean;
+	isAdmin: boolean;
+	/** open reports and unreviewed automod flags, so the queue can say so before anyone opens it. */
+	waiting: number;
+	/** nobody can reach the tools on this deployment, and nobody can be promoted from inside it. */
+	unstaffed: boolean;
+};
 
-		const actor = await loadActor(locals.user.id);
+const NO_ACCESS: ModerationAccess = {
+	canModerate: false,
+	isAdmin: false,
+	waiting: 0,
+	unstaffed: false
+};
 
-		return { canModerate: canModerate(actor), isAdmin: isAdmin(actor) };
+/** whether the current viewer should see the moderation tools at all, and whether they are needed. */
+export const moderationAccess = query(async (): Promise<ModerationAccess> => {
+	const { locals } = getRequestEvent();
+	if (!locals.user) return NO_ACCESS;
+
+	const actor = await loadActor(locals.user.id);
+
+	if (!canModerate(actor)) {
+		// only worth a database read for somebody signed in who just found a locked door
+		return { ...NO_ACCESS, unstaffed: await moderationIsUnstaffed() };
 	}
-);
+
+	return {
+		canModerate: true,
+		isAdmin: isAdmin(actor),
+		waiting: await countModerationQueue(),
+		unstaffed: false
+	};
+});
 
 export type ReportedMessage = {
 	messageId: string;
@@ -121,7 +147,7 @@ export const listFlaggedMessages = query(async (): Promise<ReportedMessage[]> =>
 		})
 		.from(matchMessage)
 		.innerJoin(user, eq(user.id, matchMessage.userId))
-		.where(and(isNull(matchMessage.deletedAt), sql`${matchMessage.flaggedRule} is not null`))
+		.where(and(isNull(matchMessage.deletedAt), isNotNull(matchMessage.flaggedRule)))
 		.orderBy(desc(matchMessage.createdAt))
 		.limit(50);
 

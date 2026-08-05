@@ -57,11 +57,39 @@ TURSO_AUTH_TOKEN=your_turso_auth_token
 Initialize or update the local schema, then start the development server:
 
 ```sh
-bun run db:push
+bun run db:migrate
 bun run dev
 ```
 
 Open [http://localhost:5173](http://localhost:5173).
+
+Accounts and chat need a little more configuration; see [accounts and chat](#accounts-and-chat) below. Without it the app still runs: sign-up works and verification links are printed to the server console instead of being emailed.
+
+### schema changes
+
+Migrations live in `drizzle/` and are applied with `bun run db:migrate`. Change `src/lib/server/db/schema.ts`, run `bun run db:generate`, and commit the generated migration alongside the schema change. `bun run db:push` is for throwaway local experiments only — using it against a shared database leaves that database at a state no migration describes.
+
+`drizzle/0000_baseline.sql` creates every table with `IF NOT EXISTS`, so it is safe to run against a database that predates the migrations directory: the tables it already has are left alone and the ones it is missing are created.
+
+## accounts and chat
+
+Chat is per match and needs an account; accounts need a confirmed email address.
+
+```dotenv
+# openssl rand -base64 32
+BETTER_AUTH_SECRET=
+# transactional email. without these, links are logged to the server console instead of sent.
+RESEND_API_KEY=
+EMAIL_FROM=matcha <noreply@example.com>
+# the first moderator. without it nobody can reach /moderation and reports pile up unseen.
+MODERATOR_EMAILS=you@example.com
+# where people appeal a mute or ask about their data
+SUPPORT_EMAIL=you@example.com
+```
+
+`BETTER_AUTH_URL` is deliberately left unset in most deployments — the app derives its own origin, and `.env.example` explains the cases where you do have to pin it.
+
+Whoever is listed in `MODERATOR_EMAILS` is treated as an admin regardless of what the database says, and can promote everyone else from `/moderation`. Signing in with no moderator configured shows instructions rather than a locked door.
 
 ## scouting workflow
 
@@ -82,6 +110,8 @@ some matches do not have film, and some recordings are uploaded in separate stre
 | `bun run build`       | create a production build                          |
 | `bun run preview`     | preview the production build locally               |
 | `bun run check`       | run svelte and typescript checks                   |
+| `bun run test`        | run the unit tests once                            |
+| `bun run test:watch`  | run the unit tests in watch mode                   |
 | `bun run lint`        | check prettier formatting and eslint               |
 | `bun run format`      | format the repository                              |
 | `bun run db:push`     | push the drizzle schema to the configured database |
@@ -107,7 +137,8 @@ the app uses server-side remote functions and `+page.server.ts`/`+layout.server.
 - the event index currently targets v5rc season `197` (`2025-2026`, push back) and tournament events.
 - youtube discovery can take a few seconds because it reads vex webcast references and may search the youtube data api.
 - youtube api quota is intentionally limited when expanding a referenced channel's uploads.
-- there is no authentication layer yet; anyone with access to the running app can view and edit saved playback corrections.
+- chat requires a confirmed account, but the rest of the app does not: anyone with access to the running app can still view and edit saved playback corrections.
+- `/terms` and `/privacy` are drafts written to match what the code does. they have not been through a lawyer.
 
 ## development conventions
 

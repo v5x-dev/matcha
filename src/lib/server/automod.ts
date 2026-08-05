@@ -234,6 +234,20 @@ const EMAIL_PATTERN = /\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/i;
 /** long digit runs, ignoring the punctuation people put in phone numbers. */
 const PHONE_PATTERN = /(?:\+?\d[\s().-]?){10,}/;
 
+/**
+ * A run of ten or more digits is not enough on its own: "45 88 102 76 39 12 55 91 20 8" is ten
+ * match scores, and this is a scouting app, so lists of numbers are ordinary conversation. Real
+ * phone numbers group their digits a handful of times at most, which is what separates the two.
+ */
+const MAX_PHONE_SEPARATORS = 4;
+
+function looksLikePhoneNumber(body: string): boolean {
+	const run = body.match(PHONE_PATTERN)?.[0];
+	if (!run) return false;
+
+	return (run.match(/[\s().-]/g) ?? []).length <= MAX_PHONE_SEPARATORS;
+}
+
 const SLUR_SET = new Set(SLUR_FRAGMENTS);
 const SLUR_EXCEPTION_SET = new Set(SLUR_EXCEPTIONS.map(flatten));
 const PROFANITY_TERMS = PROFANITY_WORDS.map(flatten);
@@ -353,7 +367,7 @@ export function reviewMessage(input: string): AutomodVerdict {
 	}
 
 	// checked before links so an email address is not reported back as a link problem
-	if (EMAIL_PATTERN.test(body) || PHONE_PATTERN.test(body)) {
+	if (EMAIL_PATTERN.test(body) || looksLikePhoneNumber(body)) {
 		return verdict('block', 'contact-info', 'do not post contact details in chat', 1, body);
 	}
 
@@ -384,8 +398,9 @@ export function reviewMessage(input: string): AutomodVerdict {
 		return verdict('block', 'caps', 'turn off caps lock', 1, body);
 	}
 
-	// one word (or a short phrase) pasted over and over
-	if (words.length >= 6) {
+	// one word (or a short phrase) pasted over and over. the floor is eight rather than six so that
+	// chanting a two-word phrase three times — which is what a crowd does — is not spam
+	if (words.length >= 8) {
 		const distinct = new Set(words);
 		if (distinct.size <= Math.ceil(words.length / 4)) {
 			return verdict('block', 'repetition', 'that is just the same thing repeated', 1, body);

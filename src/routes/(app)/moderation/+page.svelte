@@ -102,11 +102,24 @@
 		<p class="p-6 text-sm text-muted-foreground">checking your access...</p>
 	{:else if !access.current?.canModerate}
 		<div class="grid h-full place-items-center p-6 text-center">
-			<div class="flex flex-col items-center gap-2">
-				<ShieldIcon class="size-6 text-muted-foreground" />
-				<p class="text-sm font-medium">moderation is for moderators</p>
-				<p class="text-xs text-muted-foreground">ask an admin if you should have access</p>
-			</div>
+			{#if access.current?.unstaffed}
+				<div class="flex max-w-md flex-col items-center gap-2">
+					<ShieldIcon class="size-6 text-muted-foreground" />
+					<p class="text-sm font-medium">nobody moderates this deployment yet</p>
+					<p class="text-xs text-muted-foreground">
+						there is no admin account and no bootstrap list, so reports have nowhere to go. set
+						<code class="rounded bg-sidebar-accent px-1">moderator_emails</code>
+						to a comma-separated list of addresses and redeploy — whoever is on it can promote everyone
+						else from this page.
+					</p>
+				</div>
+			{:else}
+				<div class="flex flex-col items-center gap-2">
+					<ShieldIcon class="size-6 text-muted-foreground" />
+					<p class="text-sm font-medium">moderation is for moderators</p>
+					<p class="text-xs text-muted-foreground">ask an admin if you should have access</p>
+				</div>
+			{/if}
 		</div>
 	{:else}
 		<div class="mx-auto flex max-w-4xl flex-col gap-4 p-4 sm:p-6">

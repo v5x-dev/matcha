@@ -1,6 +1,12 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
-	import { resendVerificationEmail, signIn, signUp, VERIFY_CALLBACK_URL } from '$lib/auth-client';
+	import {
+		requestPasswordReset,
+		resendVerificationEmail,
+		signIn,
+		signUp,
+		VERIFY_CALLBACK_URL
+	} from '$lib/auth-client';
 	import { Button } from '$lib/components/ui/button';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Input } from '$lib/components/ui/input';
@@ -12,13 +18,17 @@
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
 	let mode = $state<'sign-in' | 'sign-up'>('sign-in');
+	/** the credentials form, or the one that asks for a reset link. */
+	let view = $state<'credentials' | 'forgot'>('credentials');
 	let name = $state('');
 	let email = $state('');
 	let password = $state('');
 	let errorMessage = $state<string | null>(null);
 	let pending = $state(false);
-	/** set once a confirmation link is on its way, which replaces the form with a "check your mail" */
+	/** set once a link is on its way, which replaces the form with a "check your mail" */
 	let awaitingEmail = $state<string | null>(null);
+	/** which link is in the post, since the two say different things about what to do next. */
+	let awaiting = $state<'verification' | 'reset'>('verification');
 
 	// a stale error from the other tab reads as if the form you are looking at failed
 	function switchMode(next: string | undefined) {
@@ -34,6 +44,26 @@
 		errorMessage = null;
 		pending = false;
 		awaitingEmail = null;
+		awaiting = 'verification';
+		view = 'credentials';
+	}
+
+	/**
+	 * Always ends on "check your email", including for an address with no account. Anything else
+	 * turns this box into a way to ask whether somebody has signed up.
+	 */
+	async function submitForgot(submitEvent: SubmitEvent) {
+		submitEvent.preventDefault();
+		if (pending) return;
+
+		pending = true;
+		errorMessage = null;
+
+		await requestPasswordReset(email);
+
+		pending = false;
+		awaiting = 'reset';
+		awaitingEmail = email;
 	}
 
 	async function submit(submitEvent: SubmitEvent) {
@@ -99,7 +129,11 @@
 			<Dialog.Header>
 				<Dialog.Title>check your email</Dialog.Title>
 				<Dialog.Description>
-					we sent a confirmation link to {awaitingEmail.toLowerCase()}. open it and you are in.
+					{#if awaiting === 'reset'}
+						if {awaitingEmail.toLowerCase()} has an account, a reset link is on its way to it.
+					{:else}
+						we sent a confirmation link to {awaitingEmail.toLowerCase()}. open it and you are in.
+					{/if}
 				</Dialog.Description>
 			</Dialog.Header>
 
@@ -115,6 +149,43 @@
 			</div>
 
 			<Button variant="secondary" onclick={() => (open = false)}>done</Button>
+		{:else if view === 'forgot'}
+			<Dialog.Header>
+				<Dialog.Title>reset your password</Dialog.Title>
+				<Dialog.Description>
+					we will email you a link to set a new one. no need to remember the old one.
+				</Dialog.Description>
+			</Dialog.Header>
+
+			<form class="flex flex-col gap-4" onsubmit={submitForgot}>
+				<div class="flex flex-col gap-2">
+					<Label for="auth-forgot-email">email</Label>
+					<Input
+						id="auth-forgot-email"
+						type="email"
+						bind:value={email}
+						required
+						autocomplete="email"
+						placeholder="you@example.com"
+					/>
+				</div>
+
+				<Button type="submit" disabled={pending}>
+					{#if pending}<LoaderCircleIcon class="animate-spin" />{/if}
+					send me a link
+				</Button>
+
+				<button
+					type="button"
+					class="text-xs text-muted-foreground underline hover:text-foreground"
+					onclick={() => {
+						view = 'credentials';
+						errorMessage = null;
+					}}
+				>
+					back to sign in
+				</button>
+			</form>
 		{:else}
 			<Dialog.Header>
 				<Dialog.Title>welcome to matcha</Dialog.Title>
@@ -176,6 +247,19 @@
 					{#if pending}<LoaderCircleIcon class="animate-spin" />{/if}
 					{mode === 'sign-in' ? 'sign in' : 'create account'}
 				</Button>
+
+				{#if mode === 'sign-in'}
+					<button
+						type="button"
+						class="text-xs text-muted-foreground underline hover:text-foreground"
+						onclick={() => {
+							view = 'forgot';
+							errorMessage = null;
+						}}
+					>
+						forgot your password?
+					</button>
+				{/if}
 			</form>
 		{/if}
 	</Dialog.Content>

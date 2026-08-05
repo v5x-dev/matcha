@@ -57,6 +57,7 @@
 	const canModerate = $derived(viewer?.canModerate ?? false);
 	const sanction = $derived(viewer?.sanction ?? null);
 	const blockCount = $derived(viewer?.blockedIds.length ?? 0);
+	const waiting = $derived(viewer?.queued ?? 0);
 	const blockedUsers = listBlockedChatUsers();
 	const isLoading = $derived(
 		Boolean(messagesQuery?.loading) && messagesQuery?.current === undefined
@@ -84,8 +85,9 @@
 			if (document.visibilityState !== 'visible') return;
 
 			void query.refresh();
-			// a mute that has run out should give the composer back without a reload
-			if (sanction) void viewerQuery.refresh();
+			// a mute that has run out should give the composer back without a reload, and a moderator
+			// should see the queue fill up while they are watching the match it happened in
+			if (sanction || canModerate) void viewerQuery.refresh();
 		}, POLL_INTERVAL_MS);
 
 		return () => clearInterval(timer);
@@ -336,6 +338,12 @@
 					{describeSanctionEnd(sanction.expiresAt)}
 				</p>
 				<p class="mt-0.5 text-xs text-muted-foreground">{sanction.reason}</p>
+				<a
+					class="mt-1 inline-block text-xs text-muted-foreground underline hover:text-foreground"
+					href={resolve('/(app)/account')}
+				>
+					think this is wrong? appeal it
+				</a>
 			</div>
 			<button
 				type="button"
@@ -371,6 +379,13 @@
 						<span class="truncate">{user.name.toLowerCase()}</span>
 					</button>
 
+					<a
+						class="shrink-0 text-xs text-muted-foreground hover:text-foreground"
+						href={resolve('/(app)/account')}
+					>
+						account
+					</a>
+
 					{#if blockCount > 0}
 						<button
 							type="button"
@@ -388,6 +403,15 @@
 						>
 							<ShieldIcon class="size-3" />
 							mod
+							{#if waiting > 0}
+								<!-- the queue is the one thing here nobody gets told about, so it has to be
+								     visible from the chat a moderator is already sitting in -->
+								<span
+									class="rounded-full bg-primary px-1.5 text-[0.65rem] font-semibold text-primary-foreground"
+								>
+									{waiting > 99 ? '99+' : waiting}
+								</span>
+							{/if}
 						</a>
 					{/if}
 				</div>

@@ -1,7 +1,7 @@
 import tailwindcss from '@tailwindcss/vite';
 import adapter from '@sveltejs/adapter-auto';
 import { sveltekit } from '@sveltejs/kit/vite';
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
 	plugins: [
@@ -26,5 +26,12 @@ export default defineConfig({
 				}
 			}
 		})
-	]
+	],
+
+	test: {
+		// server-side rules only for now: these are the parts where being wrong is expensive and
+		// invisible, and none of them need a dom
+		include: ['src/**/*.test.ts'],
+		environment: 'node'
+	}
 });

@@ -1,6 +1,6 @@
 import { command, getRequestEvent, query } from '$app/server';
 import { httpError } from '$lib/server/http-error';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, notInArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '$lib/server/db';
 import { match, matchMessage, messageReport, user, userBlock } from '$lib/server/db/schema';
@@ -11,6 +11,7 @@ import {
 	activeSanction,
 	canModerate,
 	checkRateLimit,
+	countModerationQueue,
 	isDuplicate,
 	loadActor,
 	recordStrike,
@@ -33,6 +34,8 @@ export type ChatViewerState = {
 	canModerate: boolean;
 	sanction: ActiveSanction | null;
 	blockedIds: string[];
+	/** how much is waiting in the moderation queue. always 0 for anyone who cannot open it. */
+	queued: number;
 };
 
 const matchRef = z.object({
@@ -62,9 +65,16 @@ async function blockedBy(userId: string | undefined): Promise<string[]> {
 	return rows.map((row) => row.blockedId);
 }
 
+const PLAIN_VIEWER: ChatViewerState = {
+	canModerate: false,
+	sanction: null,
+	blockedIds: [],
+	queued: 0
+};
+
 export const chatViewerState = query(async (): Promise<ChatViewerState> => {
 	const { locals } = getRequestEvent();
-	if (!locals.user) return { canModerate: false, sanction: null, blockedIds: [] };
+	if (!locals.user) return PLAIN_VIEWER;
 
 	try {
 		const actor = await loadActor(locals.user.id);
@@ -73,10 +83,19 @@ export const chatViewerState = query(async (): Promise<ChatViewerState> => {
 			blockedBy(locals.user.id)
 		]);
 
-		return { canModerate: canModerate(actor), sanction, blockedIds };
+		const viewerCanModerate = canModerate(actor);
+
+		return {
+			canModerate: viewerCanModerate,
+			sanction,
+			blockedIds,
+			// counted here rather than from a second query on the client: a moderator sitting in chat
+			// is the only person who ever finds out the queue has something in it
+			queued: viewerCanModerate ? await countModerationQueue() : 0
+		};
 	} catch (error) {
 		console.error('could not resolve chat permissions; falling back to a plain viewer', error);
-		return { canModerate: false, sanction: null, blockedIds: [] };
+		return PLAIN_VIEWER;
 	}
 });
 
@@ -87,11 +106,10 @@ export const listMatchMessages = query(
 
 		let rows;
 		let viewerCanModerate = false;
-		let blockedSet = new Set<string>();
 		try {
 			const actor = locals.user ? await loadActor(locals.user.id) : null;
 			viewerCanModerate = canModerate(actor);
-			blockedSet = new Set(await blockedBy(locals.user?.id));
+			const blockedIds = await blockedBy(locals.user?.id);
 
 			rows = await db
 				.select({
@@ -99,14 +117,23 @@ export const listMatchMessages = query(
 					body: matchMessage.body,
 					createdAt: matchMessage.createdAt,
 					flaggedRule: matchMessage.flaggedRule,
-					deletedAt: matchMessage.deletedAt,
 					authorId: user.id,
 					authorName: user.name,
 					authorRole: user.role
 				})
 				.from(matchMessage)
 				.innerJoin(user, eq(user.id, matchMessage.userId))
-				.where(and(eq(matchMessage.eventId, eventId), eq(matchMessage.matchId, matchId)))
+				.where(
+					and(
+						eq(matchMessage.eventId, eventId),
+						eq(matchMessage.matchId, matchId),
+						// both of these have to be part of the query rather than a pass over the result:
+						// filtering after `limit` spends the budget on rows nobody sees, so deleting
+						// messages or blocking one loud person would visibly shorten the panel
+						isNull(matchMessage.deletedAt),
+						...(blockedIds.length > 0 ? [notInArray(matchMessage.userId, blockedIds)] : [])
+					)
+				)
 				.orderBy(desc(matchMessage.createdAt))
 				.limit(MESSAGE_LIMIT);
 		} catch (error) {
@@ -115,19 +142,16 @@ export const listMatchMessages = query(
 		}
 
 		// read newest-first so the limit keeps the *latest* messages, then flip back to reading order
-		return rows
-			.reverse()
-			.filter((row) => row.deletedAt === null && !blockedSet.has(row.authorId))
-			.map((row) => ({
-				id: row.id,
-				body: row.body,
-				createdAt: row.createdAt.getTime(),
-				authorId: row.authorId,
-				authorName: row.authorName,
-				authorRole: row.authorRole,
-				// the rule name is a moderation signal, not something the room needs to see
-				flaggedRule: viewerCanModerate ? row.flaggedRule : null
-			}));
+		return rows.reverse().map((row) => ({
+			id: row.id,
+			body: row.body,
+			createdAt: row.createdAt.getTime(),
+			authorId: row.authorId,
+			authorName: row.authorName,
+			authorRole: row.authorRole,
+			// the rule name is a moderation signal, not something the room needs to see
+			flaggedRule: viewerCanModerate ? row.flaggedRule : null
+		}));
 	}
 );
 
@@ -149,21 +173,26 @@ function describeUntil(expiresAt: number | null): string {
 export const sendMatchMessage = command(sendSchema, async (input): Promise<MatchMessage> => {
 	const { actor, name } = await requireUser();
 
-	// a match id from another event would otherwise file the message under a chat nobody can read
-	const [cachedMatch] = await db
-		.select({ id: match.id })
-		.from(match)
-		.where(and(eq(match.id, input.matchId), eq(match.eventId, input.eventId)));
+	// none of these three depend on each other, and the database is a network hop away, so they go
+	// out together and are judged in order afterwards — the order is what decides which reason the
+	// sender is told about when more than one applies
+	const [cachedMatches, sanction, rate] = await Promise.all([
+		// a match id from another event would otherwise file the message under a chat nobody can read
+		db
+			.select({ id: match.id })
+			.from(match)
+			.where(and(eq(match.id, input.matchId), eq(match.eventId, input.eventId))),
+		activeSanction(actor.id),
+		checkRateLimit(actor.id)
+	]);
 
-	if (!cachedMatch) httpError(404, 'match not found');
+	if (cachedMatches.length === 0) httpError(404, 'match not found');
 
-	const sanction = await activeSanction(actor.id);
 	if (sanction) {
 		const noun = sanction.kind === 'ban' ? 'banned from chat' : 'muted';
 		httpError(403, `you are ${noun} ${describeUntil(sanction.expiresAt)}: ${sanction.reason}`);
 	}
 
-	const rate = await checkRateLimit(actor.id);
 	if (!rate.allowed) httpError(429, rate.reason);
 
 	const verdict = reviewMessage(input.body);

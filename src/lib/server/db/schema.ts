@@ -76,6 +76,47 @@ export const verification = sqliteTable(
 );
 
 /**
+ * better-auth's own rate limit counters, keyed by client ip and endpoint. Stored here rather than
+ * in memory because the app runs on a serverless adapter: an in-process counter resets on every
+ * cold start and does not add up across instances, which makes the limit decorative.
+ *
+ * Written and pruned entirely by better-auth. `id` is not part of its rate limit model, but its
+ * adapter generates one for every create, so the column has to exist.
+ */
+export const rateLimit = sqliteTable(
+	'rate_limit',
+	{
+		id: text('id').primaryKey(),
+		key: text('key').notNull(),
+		count: integer('count').notNull(),
+		/** epoch milliseconds, written as a plain number rather than a timestamp by better-auth. */
+		lastRequest: integer('last_request').notNull()
+	},
+	(t) => [index('rate_limit_key_idx').on(t.key)]
+);
+
+/**
+ * Per-address cooldown for the mail we send to people who are not signed in: verification and
+ * password reset. better-auth's rate limiting is keyed by ip, which stops one client hammering the
+ * endpoint but does nothing about a pool of clients all pointed at the same inbox.
+ */
+export const emailThrottle = sqliteTable(
+	'email_throttle',
+	{
+		kind: text('kind').$type<EmailKind>().notNull(),
+		/** lowercased, so casing tricks do not buy a fresh allowance. */
+		address: text('address').notNull(),
+		/** start of the allowance window this row is counting. */
+		windowStart: integer('window_start', { mode: 'timestamp_ms' }).notNull(),
+		count: integer('count').notNull().default(0),
+		lastSentAt: integer('last_sent_at', { mode: 'timestamp_ms' }).notNull()
+	},
+	(t) => [primaryKey({ columns: [t.kind, t.address] })]
+);
+
+export type EmailKind = 'verification' | 'password-reset' | 'account-deletion';
+
+/**
  * Chat for one match. `eventId` is denormalised off the match so the sidebar can read a match's
  * messages without joining, and so a stale match id can never leak another event's chat.
  */
