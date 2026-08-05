@@ -188,7 +188,7 @@
 			</InputGroup.Addon>
 		</InputGroup.Root>
 		{#if isLoading}
-			<p class="px-1 pt-1 text-xs text-muted-foreground" aria-live="polite">
+			<p class="px-2 py-6 text-center text-sm text-muted-foreground" aria-live="polite">
 				{result ? 'searching events...' : 'loading events...'}
 			</p>
 		{/if}
