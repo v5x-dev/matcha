@@ -12,7 +12,7 @@
 <Toaster />
 
 <main
-	class="h-screen w-screen overflow-hidden"
+	class="h-dvh w-screen overflow-hidden pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
 	data-sveltekit-preload-code="eager"
 	data-sveltekit-preload-data="hover"
 >
