@@ -12,9 +12,16 @@ export const user = sqliteTable('user', {
 	email: text('email').notNull().unique(),
 	emailVerified: integer('email_verified', { mode: 'boolean' }).notNull().default(false),
 	image: text('image'),
+	/**
+	 * Chat privilege level. Not a better-auth field: it is only read by our own moderation code, so
+	 * it needs a default for the rows better-auth inserts on sign-up.
+	 */
+	role: text('role').$type<UserRole>().notNull().default('user'),
 	createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 	updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
 });
+
+export type UserRole = 'user' | 'moderator' | 'admin';
 
 export const session = sqliteTable(
 	'session',
@@ -84,18 +91,105 @@ export const matchMessage = sqliteTable(
 			.notNull()
 			.references(() => user.id, { onDelete: 'cascade' }),
 		body: text('body').notNull(),
+		/** set when automod let the message through but wants a human to look at it. */
+		flaggedRule: text('flagged_rule'),
+		/** soft delete: the row stays so moderators can still see what was said and who said it. */
+		deletedAt: integer('deleted_at', { mode: 'timestamp_ms' }),
+		/** null with `deletedAt` set means automod or the author's own account removal did it. */
+		deletedBy: text('deleted_by').references(() => user.id, { onDelete: 'set null' }),
+		deletedReason: text('deleted_reason'),
 		createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
 	},
-	(t) => [index('match_message_match_idx').on(t.matchId, t.createdAt)]
+	(t) => [
+		index('match_message_match_idx').on(t.matchId, t.createdAt),
+		// rate limiting counts a user's recent messages on every send, so it gets its own index
+		index('match_message_author_idx').on(t.userId, t.createdAt)
+	]
 );
 
-export const task = sqliteTable('task', {
-	id: text('id')
-		.primaryKey()
-		.$defaultFn(() => crypto.randomUUID()),
-	title: text('title').notNull(),
-	priority: integer('priority').notNull().default(1)
-});
+/** A mute or ban, issued by automod (`issuedBy` null) or by a moderator. */
+export const userSanction = sqliteTable(
+	'user_sanction',
+	{
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => crypto.randomUUID()),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		kind: text('kind').$type<'mute' | 'ban'>().notNull(),
+		reason: text('reason').notNull(),
+		/** null means automod. */
+		issuedBy: text('issued_by').references(() => user.id, { onDelete: 'set null' }),
+		/** null means it never expires on its own and has to be lifted by hand. */
+		expiresAt: integer('expires_at', { mode: 'timestamp_ms' }),
+		liftedAt: integer('lifted_at', { mode: 'timestamp_ms' }),
+		liftedBy: text('lifted_by').references(() => user.id, { onDelete: 'set null' }),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+	},
+	(t) => [index('user_sanction_user_idx').on(t.userId, t.expiresAt)]
+);
+
+/** Every message automod refused, kept so repeat offences can escalate into a mute. */
+export const automodStrike = sqliteTable(
+	'automod_strike',
+	{
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => crypto.randomUUID()),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		rule: text('rule').notNull(),
+		severity: integer('severity').notNull(),
+		/** the rejected text, so a moderator reviewing an auto-mute can see what triggered it. */
+		body: text('body').notNull(),
+		eventId: integer('event_id'),
+		matchId: integer('match_id'),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+	},
+	(t) => [index('automod_strike_user_idx').on(t.userId, t.createdAt)]
+);
+
+/** A viewer flagging a message for moderator attention. */
+export const messageReport = sqliteTable(
+	'message_report',
+	{
+		messageId: text('message_id')
+			.notNull()
+			.references(() => matchMessage.id, { onDelete: 'cascade' }),
+		reporterId: text('reporter_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		reason: text('reason').$type<ReportReason>().notNull(),
+		status: text('status').$type<'open' | 'actioned' | 'dismissed'>().notNull().default('open'),
+		resolvedBy: text('resolved_by').references(() => user.id, { onDelete: 'set null' }),
+		resolvedAt: integer('resolved_at', { mode: 'timestamp_ms' }),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+	},
+	(t) => [
+		// one report per person per message; reporting twice is not extra signal
+		primaryKey({ columns: [t.messageId, t.reporterId] }),
+		index('message_report_status_idx').on(t.status, t.createdAt)
+	]
+);
+
+export type ReportReason = 'harassment' | 'hate' | 'spam' | 'sexual' | 'other';
+
+/** A personal mute: `blockerId` stops seeing anything `blockedId` posts. */
+export const userBlock = sqliteTable(
+	'user_block',
+	{
+		blockerId: text('blocker_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		blockedId: text('blocked_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+	},
+	(t) => [primaryKey({ columns: [t.blockerId, t.blockedId] })]
+);
 
 /**
  * Cached robotevents events. Columns that we filter or sort on are lifted out of the payload, the
