@@ -1,0 +1,1 @@
+ALTER TABLE `user` ADD `over_thirteen` integer DEFAULT false NOT NULL;

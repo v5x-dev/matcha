@@ -17,6 +17,12 @@ export const user = sqliteTable('user', {
 	 * it needs a default for the rows better-auth inserts on sign-up.
 	 */
 	role: text('role').$type<UserRole>().notNull().default('user'),
+	/**
+	 * The age screen answer, given once at sign-up. Sign-up refuses to proceed without a `true`, so
+	 * every account created since the screen existed has one; the default covers the accounts that
+	 * predate it and were never asked. `createdAt` is when the answer was given.
+	 */
+	overThirteen: integer('over_thirteen', { mode: 'boolean' }).notNull().default(false),
 	createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 	updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull()
 });

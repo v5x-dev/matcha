@@ -1,4 +1,5 @@
 import { betterAuth } from 'better-auth';
+import { APIError, createAuthMiddleware } from 'better-auth/api';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { sveltekitCookies } from 'better-auth/svelte-kit';
 import { dev } from '$app/environment';
@@ -94,6 +95,15 @@ export const auth = betterAuth({
 		}
 	},
 	user: {
+		additionalFields: {
+			/**
+			 * The age screen. `required` makes better-auth insist the field is present in a sign-up
+			 * body; it does not care what the answer is, so the `before` hook is what turns a "no"
+			 * away. Stored rather than checked and discarded: an answer nobody kept is not a record
+			 * that the question was ever asked.
+			 */
+			overThirteen: { type: 'boolean', required: true, input: true }
+		},
 		// the display name doubles as the chat handle, so it is worth keeping changeable
 		changeEmail: { enabled: false },
 		deleteUser: {
@@ -107,6 +117,19 @@ export const auth = betterAuth({
 				await sendEmail(accountDeletionEmail({ to: user.email, name: user.name, url }));
 			}
 		}
+	},
+	hooks: {
+		before: createAuthMiddleware(async (ctx) => {
+			if (ctx.path !== '/sign-up/email') return;
+
+			// the field being `required` only guarantees it arrived, and an unticked box arrives as a
+			// perfectly valid `false`. refusing it here is the whole point of asking.
+			if ((ctx.body as { overThirteen?: unknown })?.overThirteen !== true) {
+				throw new APIError('BAD_REQUEST', {
+					message: 'You have to confirm you are over 13 to create an account'
+				});
+			}
+		})
 	},
 	// must stay last: it lets better-auth set its cookies through sveltekit's own cookie api
 	plugins: [sveltekitCookies(getRequestEvent)]

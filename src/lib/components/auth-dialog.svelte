@@ -8,6 +8,7 @@
 		VERIFY_CALLBACK_URL
 	} from '$lib/auth-client';
 	import { Button } from '$lib/components/ui/button';
+	import { Checkbox } from '$lib/components/ui/checkbox';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
@@ -23,6 +24,8 @@
 	let name = $state('');
 	let email = $state('');
 	let password = $state('');
+	/** the age screen. sign-up is refused without it, on the server too. */
+	let overThirteen = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let pending = $state(false);
 	/** set once a link is on its way, which replaces the form with a "check your mail" */
@@ -41,6 +44,7 @@
 		name = '';
 		email = '';
 		password = '';
+		overThirteen = false;
 		errorMessage = null;
 		pending = false;
 		awaitingEmail = null;
@@ -74,11 +78,18 @@
 		errorMessage = null;
 
 		if (mode === 'sign-up') {
+			if (!overThirteen) {
+				pending = false;
+				errorMessage = 'confirm you are over 13 to create an account';
+				return;
+			}
+
 			// no session comes back: better-auth holds it until the address is confirmed
 			const result = await signUp.email({
 				name,
 				email,
 				password,
+				overThirteen,
 				callbackURL: VERIFY_CALLBACK_URL
 			});
 			pending = false;
@@ -238,6 +249,18 @@
 						placeholder="at least 8 characters"
 					/>
 				</div>
+
+				{#if mode === 'sign-up'}
+					<div class="flex items-start gap-2.5">
+						<Checkbox id="auth-over-13" bind:checked={overThirteen} class="mt-0.5" />
+						<Label
+							for="auth-over-13"
+							class="text-sm leading-snug font-normal text-muted-foreground"
+						>
+							i am over 13 years old
+						</Label>
+					</div>
+				{/if}
 
 				{#if errorMessage}
 					<p class="text-sm text-destructive" role="alert">{errorMessage}</p>

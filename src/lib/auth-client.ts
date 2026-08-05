@@ -1,6 +1,11 @@
 import { createAuthClient } from 'better-auth/svelte';
+import { inferAdditionalFields } from 'better-auth/client/plugins';
 
-export const authClient = createAuthClient();
+export const authClient = createAuthClient({
+	// spelled out rather than inferred from `typeof auth`: that type lives in $lib/server, and
+	// importing it here would reach across the server boundary for a shape this small.
+	plugins: [inferAdditionalFields({ user: { overThirteen: { type: 'boolean' } } })]
+});
 
 export const {
 	signIn,
