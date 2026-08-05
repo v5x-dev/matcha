@@ -187,57 +187,59 @@
 				</InputGroup.Button>
 			</InputGroup.Addon>
 		</InputGroup.Root>
+	</div>
+
+	<div class="relative min-h-0 flex-1">
 		{#if isLoading}
-			<p class="px-2 py-6 text-center text-sm text-muted-foreground" aria-live="polite">
+			<p
+				class="absolute inset-x-0 top-0 mr-2 px-2 py-6 text-center text-sm text-muted-foreground"
+				aria-live="polite"
+			>
 				{result ? 'searching events...' : 'loading events...'}
 			</p>
 		{/if}
-	</div>
-
-	<div
-		class={['mr-2 min-h-0 flex-1 overflow-y-auto', isLoading && 'invisible']}
-		bind:this={viewportRef}
-	>
-		<div class="space-y-2 pr-4 pl-2">
-			{#each events as event (event.id)}
-				{@const location = formatLocation(event)}
-				<div class="w-full" data-event-id={event.id}>
-					<Item.Root variant="outline">
-						<Item.Content>
-							<Item.Title
-								><a
-									class="hover:underline"
-									href={resolve('/(app)/events/[eventId]', { eventId: event.id.toString() })}
-								>
-									{event.name.toLowerCase()}
-								</a>
-							</Item.Title>
-							<Item.Description class="flex min-w-0 items-center gap-2">
-								<span class="shrink-0">{formatRange(event.start, event.end)}</span>
-								{#if location}
-									<span aria-hidden="true">·</span>
-									<span class="truncate">{location}</span>
-								{/if}
-								{#if event.ongoing}
-									<Badge variant="secondary" class="ml-auto h-5 px-1.5 text-[10px]">live</Badge>
-								{/if}
-							</Item.Description>
-						</Item.Content>
-					</Item.Root>
-				</div>
-			{/each}
-		</div>
-		{#if !isLoading && events.length === 0}
-			<p class="px-2 py-6 text-center text-sm text-muted-foreground">no events found</p>
-		{/if}
-		{#if currentResult.nextCursor}
-			<div bind:this={loadMoreSentinel} class="h-1" aria-hidden="true"></div>
-			{#if isLoadingMore}
-				<p class="px-2 py-2 text-center text-xs text-muted-foreground" aria-live="polite">
-					loading...
-				</p>
+		<div class={['mr-2 h-full overflow-y-auto', isLoading && 'invisible']} bind:this={viewportRef}>
+			<div class="space-y-2 pr-4 pl-2">
+				{#each events as event (event.id)}
+					{@const location = formatLocation(event)}
+					<div class="w-full" data-event-id={event.id}>
+						<Item.Root variant="outline">
+							<Item.Content>
+								<Item.Title
+									><a
+										class="hover:underline"
+										href={resolve('/(app)/events/[eventId]', { eventId: event.id.toString() })}
+									>
+										{event.name.toLowerCase()}
+									</a>
+								</Item.Title>
+								<Item.Description class="flex min-w-0 items-center gap-2">
+									<span class="shrink-0">{formatRange(event.start, event.end)}</span>
+									{#if location}
+										<span aria-hidden="true">·</span>
+										<span class="truncate">{location}</span>
+									{/if}
+									{#if event.ongoing}
+										<Badge variant="secondary" class="ml-auto h-5 px-1.5 text-[10px]">live</Badge>
+									{/if}
+								</Item.Description>
+							</Item.Content>
+						</Item.Root>
+					</div>
+				{/each}
+			</div>
+			{#if !isLoading && events.length === 0}
+				<p class="px-2 py-6 text-center text-sm text-muted-foreground">no events found</p>
 			{/if}
-		{/if}
+			{#if currentResult.nextCursor}
+				<div bind:this={loadMoreSentinel} class="h-1" aria-hidden="true"></div>
+				{#if isLoadingMore}
+					<p class="px-2 py-2 text-center text-xs text-muted-foreground" aria-live="polite">
+						loading...
+					</p>
+				{/if}
+			{/if}
+		</div>
 	</div>
 </div>
 
