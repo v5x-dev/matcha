@@ -123,7 +123,7 @@
 
 						<div class="flex items-start gap-2">
 							<button
-								class="mt-1 shrink-0 text-muted-foreground"
+								class="-mx-1.5 -mb-1.5 shrink-0 p-1.5 text-muted-foreground"
 								onclick={() => toggle(event.id)}
 								aria-expanded={open}
 								aria-label={open ? 'collapse matches' : 'expand matches'}
@@ -166,51 +166,59 @@
 							<div class="mt-3 flex flex-col" transition:slide>
 								{#each eventMatches as match (match.id)}
 									<a
-										class="flex items-center gap-3 rounded-sm py-1 transition-colors hover:bg-accent"
+										class="flex flex-col gap-1 rounded-sm py-1.5 transition-colors hover:bg-accent lg:flex-row lg:items-center lg:gap-3 lg:py-1"
 										href={matchHref(match)}
 									>
-										<span class="w-28 shrink-0 truncate px-1 text-xs"
-											>{match.name.toLowerCase()}</span
-										>
-										<span
-											class="w-1 shrink-0 self-stretch rounded-full {match.color === 'red'
-												? 'bg-red-400/70'
-												: 'bg-blue-400/70'}"
-											aria-hidden="true"
-										></span>
+										<span class="flex min-w-0 items-center gap-2 lg:contents">
+											<span class="w-20 shrink-0 truncate px-1 text-xs lg:w-28"
+												>{match.name.toLowerCase()}</span
+											>
+											<span
+												class="w-1 shrink-0 self-stretch rounded-full {match.color === 'red'
+													? 'bg-red-400/70'
+													: 'bg-blue-400/70'}"
+												aria-hidden="true"
+											></span>
 
-										<span class="flex min-w-0 flex-1 items-center gap-2">
-											<span class="w-8 shrink-0 text-right text-xs font-semibold">
-												{match.played ? match.score : '—'}
+											<span class="flex min-w-0 flex-1 items-center gap-2">
+												<span class="w-8 shrink-0 text-right text-xs font-semibold">
+													{match.played ? match.score : '—'}
+												</span>
+												<span
+													class="relative h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-muted"
+												>
+													{#if match.played}
+														<span
+															class="absolute inset-y-0 left-0 rounded-full {match.result === 'win'
+																? 'bg-primary'
+																: match.result === 'loss'
+																	? 'bg-destructive/70'
+																	: 'bg-muted-foreground'}"
+															style="width: {Math.min(100, (match.score / max) * 100)}%"
+														></span>
+														<span
+															class="absolute inset-y-0 w-px bg-foreground/60"
+															style="left: {Math.min(100, (match.opponentScore / max) * 100)}%"
+														></span>
+													{/if}
+												</span>
+												<span class="w-8 shrink-0 text-xs text-muted-foreground">
+													{match.played ? match.opponentScore : '—'}
+												</span>
+											</span>
+										</span>
+
+										<span class="flex min-w-0 gap-3 pl-[5.5rem] lg:contents">
+											<span
+												class="max-w-1/2 shrink truncate text-xs text-muted-foreground lg:w-56 lg:max-w-none lg:shrink-0"
+											>
+												with {match.partners.map((team) => team.toLowerCase()).join(', ') || '—'}
 											</span>
 											<span
-												class="relative h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-muted"
+												class="max-w-1/2 shrink truncate text-xs text-muted-foreground lg:w-56 lg:max-w-none lg:shrink-0 lg:px-1"
 											>
-												{#if match.played}
-													<span
-														class="absolute inset-y-0 left-0 rounded-full {match.result === 'win'
-															? 'bg-primary'
-															: match.result === 'loss'
-																? 'bg-destructive/70'
-																: 'bg-muted-foreground'}"
-														style="width: {Math.min(100, (match.score / max) * 100)}%"
-													></span>
-													<span
-														class="absolute inset-y-0 w-px bg-foreground/60"
-														style="left: {Math.min(100, (match.opponentScore / max) * 100)}%"
-													></span>
-												{/if}
+												vs {match.opponents.map((team) => team.toLowerCase()).join(', ') || '—'}
 											</span>
-											<span class="w-8 shrink-0 text-xs text-muted-foreground">
-												{match.played ? match.opponentScore : '—'}
-											</span>
-										</span>
-
-										<span class="w-56 shrink-0 truncate text-xs text-muted-foreground">
-											with {match.partners.map((team) => team.toLowerCase()).join(', ') || '—'}
-										</span>
-										<span class="w-56 shrink-0 truncate px-1 text-xs text-muted-foreground">
-											vs {match.opponents.map((team) => team.toLowerCase()).join(', ') || '—'}
 										</span>
 									</a>
 								{:else}

@@ -27,9 +27,6 @@ export type TeamEventSummary = {
 	highScore: number | null;
 	averagePoints: number | null;
 	awards: string[];
-	matchCount: number;
-	/** matches at this event the team has actually played through. */
-	scoredMatchCount: number;
 };
 
 export type TeamSkillsSummary = {
@@ -47,7 +44,6 @@ export type TeamMatchSummary = {
 	eventName: string;
 	name: string;
 	round: number;
-	roundLabel: string;
 	at?: string;
 	/** the team-matches endpoint never sets `scored`, so this is derived from the posted scores. */
 	played: boolean;

@@ -1,6 +1,5 @@
 import { error } from '@sveltejs/kit';
 import { Team, programs, rounds, type MatchData, type TeamData } from 'events.vex';
-import { eventRoundGroups } from '$lib/match-navigation';
 import type {
 	MatchResult,
 	TeamAwardSummary,
@@ -19,10 +18,6 @@ const MAX_OVERVIEW_ENTRIES = 64;
 
 const overviewCache = new Map<string, { data: TeamOverview; cachedAt: number }>();
 const pendingOverviews = new Map<string, Promise<TeamOverview>>();
-
-const roundLabels = new Map<number, string>(
-	eventRoundGroups.map(({ round, label }) => [round, label])
-);
 
 /** elimination rounds come after qualification in every event's ordering. */
 const roundOrder = new Map<number, number>([
@@ -90,7 +85,6 @@ function summarizeMatch(
 		eventName: eventNames.get(match.event.id) ?? match.event.name,
 		name: match.name,
 		round: match.round,
-		roundLabel: roundLabels.get(match.round) ?? 'match',
 		at: matchTime(match),
 		played,
 		practice,
@@ -195,9 +189,7 @@ async function buildOverview(teamNumber: string): Promise<TeamOverview> {
 				record,
 				highScore: ranking?.high_score ?? null,
 				averagePoints: ranking?.average_points ?? null,
-				awards: awardsByEvent.get(item.id) ?? [],
-				matchCount: eventMatches.length,
-				scoredMatchCount: eventMatches.filter((match) => match.played).length
+				awards: awardsByEvent.get(item.id) ?? []
 			};
 		})
 		.sort((a, b) => (b.start ?? '').localeCompare(a.start ?? '') || b.id - a.id);
