@@ -18,11 +18,7 @@ async function optionalDatabaseRows<T>(query: Promise<T>, name: string): Promise
 	}
 }
 
-export async function load({ params }) {
-	const eventId = Number(params.eventId);
-
-	if (!Number.isInteger(eventId) || eventId <= 0) error(404, 'event not found');
-
+async function loadEventPage(eventId: number) {
 	const event = await measureServer('event.load', () => cache.getEvent(eventId), { eventId });
 	if (!event) error(404, 'event not found');
 
@@ -66,4 +62,14 @@ export async function load({ params }) {
 	if (!matches) error(404, 'event not found');
 
 	return { event, matches, savedMatchWindows, savedMatchStarts, savedPlaybackOffsets };
+}
+
+export function load({ params }) {
+	const eventId = Number(params.eventId);
+
+	if (!Number.isInteger(eventId) || eventId <= 0) error(404, 'event not found');
+
+	// Keep remote cache/database work out of SvelteKit's navigation gate. The layout renders a small
+	// pending state while this nested promise streams to the client.
+	return { eventPage: loadEventPage(eventId) };
 }

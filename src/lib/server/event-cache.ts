@@ -22,6 +22,7 @@ export const SEASON = 197;
 
 const EVENT_LIST_TTL = 6 * HOUR;
 const EVENT_TTL = HOUR;
+const EVENT_SEARCH_RESULT_TTL = MINUTE;
 const INITIAL_EVENT_PAGE_SIZE = 50;
 const MAX_EVENT_PAGE_SIZE = 100;
 const MAX_EVENT_MEMORY_ENTRIES = 128;
@@ -32,10 +33,19 @@ const eventListKey = `events:season:${SEASON}:tournament:v2`;
 const matchesKey = (eventId: number) => `matches:event:${eventId}`;
 
 const eventMemoryCache = new Map<number, { data: EventData; cachedAt: number }>();
+const eventSearchMemoryCache = new Map<
+	string,
+	{ data: EventSearchResult; cachedAt: number }
+>();
 const eventListMemoryCache: { syncedAt: number } = { syncedAt: 0 };
-const matchMemoryCache = new Map<number, { data: MatchData[]; syncedAt: number }>();
+const matchMemoryCache = new Map<
+	number,
+	{ data: MatchData[]; syncedAt: number; ttlMs: number }
+>();
 const pendingEventRequests = new Map<number, Promise<EventData | null>>();
 const pendingMatchRequests = new Map<number, Promise<MatchData[] | null>>();
+const pendingEventRefreshes = new Map<number, Promise<void>>();
+const pendingMatchRefreshes = new Map<number, Promise<void>>();
 let pendingEventListRequest: Promise<void> | null = null;
 let fallbackEventList: { events: EventData[]; fetchedAt: number } | null = null;
 let eventDatabaseUnavailableUntil = 0;
@@ -453,6 +463,7 @@ async function ensureEventListing(): Promise<void> {
 				await markSynced(eventListKey, tx);
 			});
 			eventMemoryCache.clear();
+			eventSearchMemoryCache.clear();
 			eventListMemoryCache.syncedAt = Date.now();
 		} catch (error) {
 			// stale rows are still useful when the upstream index is unavailable; an empty database is
@@ -475,13 +486,33 @@ export async function searchEvents(input: EventSearchInput): Promise<EventSearch
 	return measureServer(
 		'event.search',
 		async () => {
-			if (Date.now() < eventDatabaseUnavailableUntil) return searchEventsWithoutDatabase(input);
+			const cacheKey = JSON.stringify(input);
+			const memory = boundedGet(eventSearchMemoryCache, cacheKey);
+			if (memory && Date.now() - memory.cachedAt < EVENT_SEARCH_RESULT_TTL) return memory.data;
+
+			if (Date.now() < eventDatabaseUnavailableUntil) {
+				const result = await searchEventsWithoutDatabase(input);
+				boundedSet(
+					eventSearchMemoryCache,
+					cacheKey,
+					{ data: result, cachedAt: Date.now() },
+					MAX_EVENT_MEMORY_ENTRIES
+				);
+				return result;
+			}
 			try {
 				await ensureEventListing();
 			} catch (error) {
 				eventDatabaseUnavailableUntil = Date.now() + MINUTE;
 				console.error('event database unavailable; using the upstream event index', error);
-				return searchEventsWithoutDatabase(input);
+				const result = await searchEventsWithoutDatabase(input);
+				boundedSet(
+					eventSearchMemoryCache,
+					cacheKey,
+					{ data: result, cachedAt: Date.now() },
+					MAX_EVENT_MEMORY_ENTRIES
+				);
+				return result;
 			}
 			const limit = Math.max(
 				1,
@@ -516,7 +547,7 @@ export async function searchEvents(input: EventSearchInput): Promise<EventSearch
 			const hasMore = rows.length > limit;
 			const pageRows = rows.slice(0, limit);
 			const last = pageRows.at(-1);
-			return {
+			const result: EventSearchResult = {
 				events: pageRows.map((row) => toListItem(row as EventProjectionRow)),
 				total: Number(totalRows[0]?.count ?? 0),
 				nextCursor:
@@ -537,6 +568,13 @@ export async function searchEvents(input: EventSearchInput): Promise<EventSearch
 						.sort((a, b) => b.count - a.count || a.value.localeCompare(b.value))
 				}
 			};
+			boundedSet(
+				eventSearchMemoryCache,
+				cacheKey,
+				{ data: result, cachedAt: Date.now() },
+				MAX_EVENT_MEMORY_ENTRIES
+			);
+			return result;
 		},
 		{ season: SEASON }
 	);
@@ -556,30 +594,7 @@ export async function listEvents(): Promise<EventListItem[]> {
 }
 
 /** a single event, read through the cache. `null` when the event does not exist upstream. */
-async function getEventUncoalesced(id: number): Promise<EventData | null> {
-	const memory = boundedGet(eventMemoryCache, id);
-	if (memory && Date.now() - memory.cachedAt < EVENT_TTL) return memory.data;
-
-	let row: { data: EventData; cachedAt: Date } | undefined;
-	try {
-		[row] = await db
-			.select({ data: event.data, cachedAt: event.cachedAt })
-			.from(event)
-			.where(eq(event.id, id));
-	} catch (error) {
-		console.error(`event ${id} database read unavailable; using the upstream event`, error);
-	}
-
-	if (row && Date.now() - row.cachedAt.getTime() < EVENT_TTL) {
-		boundedSet(
-			eventMemoryCache,
-			id,
-			{ data: row.data, cachedAt: row.cachedAt.getTime() },
-			MAX_EVENT_MEMORY_ENTRIES
-		);
-		return row.data;
-	}
-
+async function refreshEvent(id: number, stale?: EventData): Promise<EventData | null> {
 	try {
 		const { data, error, response } = await measureExternalRequest(
 			'vex.events.get',
@@ -606,22 +621,54 @@ async function getEventUncoalesced(id: number): Promise<EventData | null> {
 		);
 
 		return fresh;
-	} catch (err) {
-		if (memory) return memory.data;
-		if (row) {
-			boundedSet(
-				eventMemoryCache,
-				id,
-				{ data: row.data, cachedAt: row.cachedAt.getTime() },
-				MAX_EVENT_MEMORY_ENTRIES
-			);
-			return row.data;
-		}
-		throw err;
+	} catch (error) {
+		if (stale) return stale;
+		throw error;
 	}
 }
 
+function revalidateEvent(id: number, stale: EventData) {
+	if (pendingEventRefreshes.has(id)) return;
+
+	const refresh = refreshEvent(id, stale)
+		.then(() => undefined)
+		.catch((error) => console.error(`event ${id} background refresh failed`, error))
+		.finally(() => pendingEventRefreshes.delete(id));
+	pendingEventRefreshes.set(id, refresh);
+}
+
+async function getEventUncoalesced(id: number): Promise<EventData | null> {
+	let row: { data: EventData; cachedAt: Date } | undefined;
+	try {
+		[row] = await db
+			.select({ data: event.data, cachedAt: event.cachedAt })
+			.from(event)
+			.where(eq(event.id, id));
+	} catch (error) {
+		console.error(`event ${id} database read unavailable; using the upstream event`, error);
+	}
+
+	if (row) {
+		boundedSet(
+			eventMemoryCache,
+			id,
+			{ data: row.data, cachedAt: row.cachedAt.getTime() },
+			MAX_EVENT_MEMORY_ENTRIES
+		);
+		if (Date.now() - row.cachedAt.getTime() >= EVENT_TTL) revalidateEvent(id, row.data);
+		return row.data;
+	}
+
+	return refreshEvent(id);
+}
+
 export async function getEvent(id: number): Promise<EventData | null> {
+	const memory = boundedGet(eventMemoryCache, id);
+	if (memory) {
+		if (Date.now() - memory.cachedAt >= EVENT_TTL) revalidateEvent(id, memory.data);
+		return memory.data;
+	}
+
 	const pending = pendingEventRequests.get(id);
 	if (pending) return pending;
 
@@ -638,25 +685,30 @@ export async function getEvent(id: number): Promise<EventData | null> {
  * every match across every division of an event, read through the cache. `null` when the event does
  * not exist upstream.
  */
-async function listMatchesUncoalesced(eventId: number): Promise<MatchData[] | null> {
+async function listMatchesUncoalesced(
+	eventId: number,
+	refreshStale = false
+): Promise<MatchData[] | null> {
 	const eventData = await getEvent(eventId);
 	if (!eventData) return null;
 
 	const key = matchesKey(eventId);
 	const ttl = matchesTtl(eventData);
-	const memory = boundedGet(matchMemoryCache, eventId);
-	if (memory && Date.now() - memory.syncedAt < ttl) return memory.data;
 	let databaseAvailable = true;
 	try {
-		if (await isFresh(key, ttl)) {
-			const cached = await readCachedMatches(eventId);
+		const [at, cached] = await Promise.all([syncedAt(key), readCachedMatches(eventId)]);
+		if (at) {
 			boundedSet(
 				matchMemoryCache,
 				eventId,
-				{ data: cached, syncedAt: Date.now() },
+				{ data: cached, syncedAt: at.getTime(), ttlMs: ttl },
 				MAX_MATCH_MEMORY_ENTRIES
 			);
-			return cached;
+			const stale = Date.now() - at.getTime() >= ttl;
+			if (!stale || !refreshStale) {
+				if (stale) revalidateMatches(eventId);
+				return cached;
+			}
 		}
 	} catch (error) {
 		databaseAvailable = false;
@@ -709,7 +761,7 @@ async function listMatchesUncoalesced(eventId: number): Promise<MatchData[] | nu
 		boundedSet(
 			matchMemoryCache,
 			eventId,
-			{ data: matches, syncedAt: Date.now() },
+			{ data: matches, syncedAt: Date.now(), ttlMs: ttl },
 			MAX_MATCH_MEMORY_ENTRIES
 		);
 		return matches;
@@ -720,7 +772,24 @@ async function listMatchesUncoalesced(eventId: number): Promise<MatchData[] | nu
 	}
 }
 
+function revalidateMatches(eventId: number) {
+	if (pendingMatchRefreshes.has(eventId)) return;
+
+	const refresh = (async () => {
+		await listMatchesUncoalesced(eventId, true);
+	})()
+		.catch((error) => console.error(`event ${eventId} match background refresh failed`, error))
+		.finally(() => pendingMatchRefreshes.delete(eventId));
+	pendingMatchRefreshes.set(eventId, refresh);
+}
+
 export async function listMatches(eventId: number): Promise<MatchData[] | null> {
+	const memory = boundedGet(matchMemoryCache, eventId);
+	if (memory) {
+		if (Date.now() - memory.syncedAt >= memory.ttlMs) revalidateMatches(eventId);
+		return memory.data;
+	}
+
 	const pending = pendingMatchRequests.get(eventId);
 	if (pending) return pending;
 

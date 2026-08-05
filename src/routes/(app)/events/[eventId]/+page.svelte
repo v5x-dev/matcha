@@ -41,15 +41,16 @@
 	type MatchWindow = { startSeconds: number; endSeconds: number };
 
 	const { params, data } = $props();
+	const eventPage = $derived(await data.eventPage);
 
 	const sidebar = useSidebar();
 
 	const eventId = $derived(Number(params.eventId));
-	const event = $derived(data.event);
-	const matches = $derived(data.matches);
-	const savedMatchStarts = $derived(data.savedMatchStarts);
-	const savedMatchWindows = $derived(data.savedMatchWindows);
-	const savedPlaybackOffsets = $derived(data.savedPlaybackOffsets);
+	const event = $derived(eventPage.event);
+	const matches = $derived(eventPage.matches);
+	const savedMatchStarts = $derived(eventPage.savedMatchStarts);
+	const savedMatchWindows = $derived(eventPage.savedMatchWindows);
+	const savedPlaybackOffsets = $derived(eventPage.savedPlaybackOffsets);
 	const activeMatch = $derived(matches.find((match) => match.id === activeMatchId()) ?? matches[0]);
 	const streamGrouping = $derived(groupMatchesByStreamDay(matches));
 	const orderedMatches = $derived(orderedEventMatches(matches, streamGrouping));

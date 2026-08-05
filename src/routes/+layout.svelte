@@ -11,6 +11,10 @@
 <ModeWatcher defaultMode="dark" />
 <Toaster />
 
-<main class="h-screen w-screen overflow-hidden">
+<main
+	class="h-screen w-screen overflow-hidden"
+	data-sveltekit-preload-code="eager"
+	data-sveltekit-preload-data="hover"
+>
 	{@render children()}
 </main>

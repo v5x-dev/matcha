@@ -24,19 +24,23 @@
 		year: 'numeric'
 	});
 
-	let { data } = $props();
-
 	const filters = new EventFilters();
 	let filtersOpen = $state(false);
 	let result = $state<EventSearchResult | null>(null);
-	const currentResult = $derived(result ?? data.eventSearch);
+	const emptyResult: EventSearchResult = {
+		events: [],
+		total: 0,
+		nextCursor: null,
+		facets: { levels: [], regions: [] }
+	};
+	const currentResult = $derived(result ?? emptyResult);
 	const events = $derived(currentResult.events);
-	let isLoading = $state(false);
+	let isLoading = $state(true);
 	let isLoadingMore = $state(false);
 	let requestSequence = 0;
 	let loadMoreSequence = 0;
 	let requestTimer: ReturnType<typeof setTimeout> | undefined;
-	let skipInitialRequest = true;
+	let hasRequested = false;
 	let firstUsableListMeasured = false;
 
 	function searchInput(cursor: string | null = null): EventSearchInput {
@@ -52,12 +56,9 @@
 
 	$effect(() => {
 		const input = searchInput();
-		if (skipInitialRequest) {
-			skipInitialRequest = false;
-			return;
-		}
-
 		const sequence = ++requestSequence;
+		const delay = hasRequested ? 180 : 0;
+		hasRequested = true;
 		if (requestTimer) clearTimeout(requestTimer);
 		isLoading = true;
 		requestTimer = setTimeout(() => {
@@ -80,7 +81,7 @@
 				.finally(() => {
 					if (sequence === requestSequence) isLoading = false;
 				});
-		}, 180);
+		}, delay);
 
 		return () => {
 			if (requestTimer) clearTimeout(requestTimer);
@@ -106,7 +107,7 @@
 
 	onMount(() => {
 		recordBrowserMetric('event-list.initial-payload-size', initialPayloadBytes() ?? 0, {
-			initialEventCount: currentResult.events.length
+			initialEventCount: 0
 		});
 	});
 
@@ -187,7 +188,9 @@
 			</InputGroup.Addon>
 		</InputGroup.Root>
 		{#if isLoading}
-			<p class="px-1 pt-1 text-xs text-muted-foreground" aria-live="polite">searching events...</p>
+			<p class="px-1 pt-1 text-xs text-muted-foreground" aria-live="polite">
+				{result ? 'searching events...' : 'loading events...'}
+			</p>
 		{/if}
 	</div>
 
@@ -224,7 +227,7 @@
 				</div>
 			{/each}
 		</div>
-		{#if events.length === 0}
+		{#if !isLoading && events.length === 0}
 			<p class="px-2 py-6 text-center text-sm text-muted-foreground">no events found</p>
 		{/if}
 		{#if currentResult.nextCursor}
