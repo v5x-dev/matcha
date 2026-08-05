@@ -33,15 +33,9 @@ const eventListKey = `events:season:${SEASON}:tournament:v2`;
 const matchesKey = (eventId: number) => `matches:event:${eventId}`;
 
 const eventMemoryCache = new Map<number, { data: EventData; cachedAt: number }>();
-const eventSearchMemoryCache = new Map<
-	string,
-	{ data: EventSearchResult; cachedAt: number }
->();
+const eventSearchMemoryCache = new Map<string, { data: EventSearchResult; cachedAt: number }>();
 const eventListMemoryCache: { syncedAt: number } = { syncedAt: 0 };
-const matchMemoryCache = new Map<
-	number,
-	{ data: MatchData[]; syncedAt: number; ttlMs: number }
->();
+const matchMemoryCache = new Map<number, { data: MatchData[]; syncedAt: number; ttlMs: number }>();
 const pendingEventRequests = new Map<number, Promise<EventData | null>>();
 const pendingMatchRequests = new Map<number, Promise<MatchData[] | null>>();
 const pendingEventRefreshes = new Map<number, Promise<void>>();

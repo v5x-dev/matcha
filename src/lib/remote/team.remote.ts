@@ -3,6 +3,8 @@ import { error } from '@sveltejs/kit';
 import { programs, type TeamData } from 'events.vex';
 import vex from '$lib/server/vex';
 import { measureExternalRequest } from '$lib/server/instrumentation';
+import { getTeamOverview as loadTeamOverview } from '$lib/server/team-overview';
+import type { TeamOverview } from '$lib/team-types';
 
 export const getTeam = query('unchecked', async (teamNumber: string): Promise<TeamData> => {
 	const normalizedNumber = teamNumber.trim().toUpperCase();
@@ -23,3 +25,8 @@ export const getTeam = query('unchecked', async (teamNumber: string): Promise<Te
 
 	return teamResult.data.getData();
 });
+
+export const getTeamOverview = query(
+	'unchecked',
+	async (teamNumber: string): Promise<TeamOverview> => loadTeamOverview(teamNumber)
+);
