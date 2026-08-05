@@ -24,12 +24,24 @@ if (resolution.warning) console.warn(`[auth] ${resolution.warning}`);
  *
  * Keyed by client ip, so it is a brake rather than a wall — `claimEmailSend` is what stops a
  * distributed loop pointed at one inbox.
+ *
+ * Two things make an hourly `max` bite harder than it reads, and both are why these numbers are not
+ * smaller:
+ *
+ * - every request counts, not every success. a mistyped password, an address that already has an
+ *   account, an unticked age box — each one spends an attempt.
+ * - the window is measured from the *last* request, not the first, so a tripped limit does not roll
+ *   off until the caller has been quiet for the whole hour. someone who keeps retrying keeps
+ *   pushing their own unlock back.
+ *
+ * One ip is also one venue: this app gets used from event wifi, where every phone in the building
+ * shares an address. a cap that assumes one person per key locks out a whole team.
  */
 const ANONYMOUS_LIMITS = {
 	'/sign-in/email': { window: 60, max: 10 },
-	'/sign-up/email': { window: 60 * 60, max: 6 },
-	'/send-verification-email': { window: 60 * 60, max: 6 },
-	'/request-password-reset': { window: 60 * 60, max: 6 },
+	'/sign-up/email': { window: 60 * 60, max: 30 },
+	'/send-verification-email': { window: 60 * 60, max: 20 },
+	'/request-password-reset': { window: 60 * 60, max: 20 },
 	'/reset-password': { window: 60 * 60, max: 10 },
 	'/delete-user': { window: 60 * 60, max: 6 }
 };
@@ -51,7 +63,12 @@ export const auth = betterAuth({
 		// instances, so it enforces nothing under exactly the traffic that needs enforcing.
 		storage: 'database',
 		modelName: 'rateLimit',
-		customRules: ANONYMOUS_LIMITS
+		// off locally, and not to make life easy: better-auth cannot resolve a client ip behind the
+		// dev server, so it keys every request to 127.0.0.1. one shared bucket per path is not what
+		// these rules do in production, so running them here tests nothing and only ever locks the
+		// developer out of their own signup form for an hour. better-auth's built-in brake (3 sign-ups
+		// per 10 seconds) still applies, which is the part that catches a runaway loop.
+		customRules: dev ? undefined : ANONYMOUS_LIMITS
 	},
 	database: drizzleAdapter(db, {
 		provider: 'sqlite',

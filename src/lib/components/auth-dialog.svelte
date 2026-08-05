@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import {
+		authErrorMessage,
+		captureRetryAfter,
 		requestPasswordReset,
 		resendVerificationEmail,
 		signIn,
@@ -77,6 +79,10 @@
 		pending = true;
 		errorMessage = null;
 
+		/** seconds to wait, if the call came back rate limited. */
+		let retryAfter: number | null = null;
+		const fetchOptions = captureRetryAfter((seconds) => (retryAfter = seconds));
+
 		if (mode === 'sign-up') {
 			if (!overThirteen) {
 				pending = false;
@@ -90,12 +96,13 @@
 				email,
 				password,
 				overThirteen,
-				callbackURL: VERIFY_CALLBACK_URL
+				callbackURL: VERIFY_CALLBACK_URL,
+				fetchOptions
 			});
 			pending = false;
 
 			if (result.error) {
-				errorMessage = (result.error.message ?? 'something went wrong').toLowerCase();
+				errorMessage = authErrorMessage(result.error, retryAfter);
 				return;
 			}
 
@@ -103,16 +110,20 @@
 			return;
 		}
 
-		const result = await signIn.email({ email, password });
+		const result = await signIn.email({ email, password, fetchOptions });
 
 		if (result.error?.code === 'EMAIL_NOT_VERIFIED') {
 			// they already have an account, so the link they were sent at sign-up has almost certainly
 			// expired by now. send another rather than making them hunt for it
-			const resent = await resendVerificationEmail(email);
+			const resent = await resendVerificationEmail(email, fetchOptions);
 			pending = false;
 
 			if (resent.error) {
-				errorMessage = 'confirm your email first, but we could not send a new link. try again.';
+				// "try again" would be a lie if the resend is the thing that got throttled
+				errorMessage =
+					resent.error.status === 429
+						? authErrorMessage(resent.error, retryAfter)
+						: 'confirm your email first, but we could not send a new link. try again.';
 				return;
 			}
 
@@ -123,7 +134,7 @@
 		pending = false;
 
 		if (result.error) {
-			errorMessage = (result.error.message ?? 'something went wrong').toLowerCase();
+			errorMessage = authErrorMessage(result.error, retryAfter);
 			return;
 		}
 
