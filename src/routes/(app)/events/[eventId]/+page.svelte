@@ -691,14 +691,13 @@
 						<Button
 							{...props}
 							variant="ghost"
-							size="sm"
+							size="icon-sm"
 							class="hidden sm:inline-flex"
 							href={previousMatch ? matchHref(previousMatch.id) : undefined}
 							disabled={!previousMatch}
 							aria-label="previous match"
 						>
 							<ChevronLeftIcon />
-							previous
 						</Button>
 					{/snippet}
 				</Tooltip.Trigger>
@@ -711,13 +710,12 @@
 						<Button
 							{...props}
 							variant="ghost"
-							size="sm"
+							size="icon-sm"
 							class="hidden sm:inline-flex"
 							href={nextMatch ? matchHref(nextMatch.id) : undefined}
 							disabled={!nextMatch}
 							aria-label="next match"
 						>
-							next
 							<ChevronRightIcon />
 						</Button>
 					{/snippet}
