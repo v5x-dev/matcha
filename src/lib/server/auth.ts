@@ -101,8 +101,10 @@ export const auth = betterAuth({
 	},
 	emailVerification: {
 		sendOnSignUp: true,
-		// the dialog resends with its own callback url when a sign-in is turned away, so letting
-		// better-auth also send from here would put two near-identical links in the inbox
+		// a turned-away sign-in sends nothing at all now: the dialog shows the address its unopened
+		// link and a button to ask for another. sending from here would spend the address's hourly
+		// allowance on every mistyped password, and the mail that someone actually asked for is the
+		// one that would then get dropped
 		sendOnSignIn: false,
 		autoSignInAfterVerification: true,
 		async sendVerificationEmail({ user, url }) {

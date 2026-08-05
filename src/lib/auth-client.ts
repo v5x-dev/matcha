@@ -70,6 +70,16 @@ export const VERIFY_CALLBACK_URL = '/verify';
 export const RESET_CALLBACK_URL = '/reset-password';
 
 /**
+ * How long a "send it again" button has to stay disabled for pressing it to actually do anything.
+ *
+ * Mirrors the per-address cooldown in `$lib/server/email-throttle`, which drops a send inside that
+ * window *silently* — it has to, since answering would tell an anonymous caller whether the address
+ * is registered. So the server cannot report this and the button has to count it out itself. If the
+ * policy there changes, this has to follow it.
+ */
+export const RESEND_COOLDOWN_SECONDS = 60;
+
+/**
  * Asks for a fresh confirmation link. Every caller has to pass the same callback url or the link
  * lands on `/` with better-auth's raw error code in the query and nothing to explain it.
  */
@@ -87,6 +97,9 @@ export function resendVerificationEmail(
  * it that way: a form that answers "no account with that email" is an account checker, and the
  * addresses it would be answering about mostly belong to teenagers.
  */
-export function requestPasswordReset(email: string) {
-	return authClient.requestPasswordReset({ email, redirectTo: RESET_CALLBACK_URL });
+export function requestPasswordReset(
+	email: string,
+	fetchOptions?: Parameters<typeof authClient.requestPasswordReset>[0]['fetchOptions']
+) {
+	return authClient.requestPasswordReset({ email, redirectTo: RESET_CALLBACK_URL, fetchOptions });
 }

@@ -26,6 +26,7 @@
 	import SendIcon from '@lucide/svelte/icons/send';
 	import ShieldIcon from '@lucide/svelte/icons/shield';
 	import TrashIcon from '@lucide/svelte/icons/trash-2';
+	import UserRoundIcon from '@lucide/svelte/icons/user-round';
 	import UserXIcon from '@lucide/svelte/icons/user-x';
 	import { toast } from 'svelte-sonner';
 	import type { MatchData } from 'events.vex';
@@ -69,6 +70,9 @@
 	);
 
 	let draft = $state('');
+	const remaining = $derived(MAX_MESSAGE_LENGTH - draft.length);
+	/** the count is noise until the limit is close enough to matter. */
+	const showCount = $derived(remaining <= 40);
 	let errorMessage = $state<string | null>(null);
 	let authOpen = $state(false);
 	let viewport = $state<HTMLElement | null>(null);
@@ -345,93 +349,126 @@
 					think this is wrong? appeal it
 				</a>
 			</div>
-			<button
-				type="button"
-				class="flex min-w-0 items-center gap-1 self-start text-xs text-muted-foreground hover:text-foreground"
-				onclick={handleSignOut}
-			>
-				<LogOutIcon class="size-3 shrink-0" />
-				<span class="truncate">{user.name.toLowerCase()}</span>
-			</button>
+			{@render identity()}
 		{:else}
-			<Textarea
-				bind:value={draft}
-				rows={2}
-				maxlength={MAX_MESSAGE_LENGTH}
-				disabled={!match}
-				placeholder="say something about this match"
-				class="max-h-32 min-h-0 resize-none bg-sidebar-accent/40 text-sm"
-				onkeydown={handleKeydown}
-			/>
+			<!-- textarea and send button share one surface so the composer reads as a single control,
+			     and the focus ring belongs to the whole thing rather than just the text box -->
+			<div
+				class="rounded-2xl border border-transparent bg-sidebar-accent/40 transition-[border-color,box-shadow] duration-200 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 {match
+					? ''
+					: 'opacity-50'}"
+			>
+				<Textarea
+					bind:value={draft}
+					rows={2}
+					maxlength={MAX_MESSAGE_LENGTH}
+					disabled={!match}
+					placeholder="say something about this match"
+					class="max-h-32 min-h-0 rounded-none border-0 bg-transparent px-3 pt-2.5 pb-0 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 disabled:opacity-100"
+					onkeydown={handleKeydown}
+				/>
+
+				<div class="flex items-center justify-end gap-2 px-3 pt-1 pb-2">
+					{#if showCount}
+						<span
+							class="mr-auto text-[0.7rem] {remaining <= 0
+								? 'text-destructive'
+								: 'text-muted-foreground'}"
+						>
+							{remaining} left
+						</span>
+					{/if}
+
+					<Button
+						size="sm"
+						class="h-7 rounded-full px-3"
+						disabled={!match || draft.trim().length === 0 || sendMatchMessage.pending > 0}
+						onclick={() => void send()}
+					>
+						{#if sendMatchMessage.pending > 0}
+							<LoaderCircleIcon class="animate-spin" />
+						{:else}
+							<SendIcon />
+						{/if}
+						chat
+					</Button>
+				</div>
+			</div>
 
 			{#if errorMessage}
 				<p class="text-xs text-destructive" role="alert">{errorMessage}</p>
 			{/if}
 
 			<div class="flex items-center justify-between gap-2">
-				<div class="flex min-w-0 items-center gap-2">
-					<button
-						type="button"
-						class="flex min-w-0 items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-						onclick={handleSignOut}
-					>
-						<LogOutIcon class="size-3 shrink-0" />
-						<span class="truncate">{user.name.toLowerCase()}</span>
-					</button>
+				{@render identity()}
 
+				{#if canModerate}
 					<a
-						class="shrink-0 text-xs text-muted-foreground hover:text-foreground"
-						href={resolve('/(app)/account')}
+						class="flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+						href={resolve('/(app)/moderation')}
 					>
-						account
+						<ShieldIcon class="size-3.5" />
+						mod
+						{#if waiting > 0}
+							<!-- the queue is the one thing here nobody gets told about, so it has to be
+							     visible from the chat a moderator is already sitting in -->
+							<span
+								class="rounded-full bg-primary px-1.5 text-[0.65rem] leading-4 font-semibold text-primary-foreground"
+							>
+								{waiting > 99 ? '99+' : waiting}
+							</span>
+						{/if}
 					</a>
-
-					{#if blockCount > 0}
-						<button
-							type="button"
-							class="shrink-0 text-xs text-muted-foreground hover:text-foreground"
-							onclick={() => (blocksOpen = true)}
-						>
-							blocked ({blockCount})
-						</button>
-					{/if}
-
-					{#if canModerate}
-						<a
-							class="flex shrink-0 items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-							href={resolve('/(app)/moderation')}
-						>
-							<ShieldIcon class="size-3" />
-							mod
-							{#if waiting > 0}
-								<!-- the queue is the one thing here nobody gets told about, so it has to be
-								     visible from the chat a moderator is already sitting in -->
-								<span
-									class="rounded-full bg-primary px-1.5 text-[0.65rem] font-semibold text-primary-foreground"
-								>
-									{waiting > 99 ? '99+' : waiting}
-								</span>
-							{/if}
-						</a>
-					{/if}
-				</div>
-
-				<Button
-					size="sm"
-					disabled={!match || draft.trim().length === 0 || sendMatchMessage.pending > 0}
-					onclick={() => void send()}
-				>
-					{#if sendMatchMessage.pending > 0}
-						<LoaderCircleIcon class="animate-spin" />
-					{:else}
-						<SendIcon />
-					{/if}
-					chat
-				</Button>
+				{/if}
 			</div>
 		{/if}
 	</div>
 </div>
+
+{#snippet identity()}
+	{#if user}
+		<!-- account, blocks and sign out were four links fighting over one narrow row; behind one
+		     menu the name gets the space it needs to stay readable -->
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger
+				class="flex min-w-0 items-center gap-1.5 rounded-full py-0.5 pr-2 pl-0.5 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent data-[state=open]:text-foreground"
+			>
+				<span
+					class="grid size-5 shrink-0 place-items-center rounded-full bg-sidebar-accent text-[0.65rem] font-semibold {colorFor(
+						user.id
+					)}"
+				>
+					{user.name.trim().slice(0, 1).toLowerCase()}
+				</span>
+				<span class="truncate">{user.name.toLowerCase()}</span>
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Content align="start" class="w-44">
+				<DropdownMenu.Item>
+					{#snippet child({ props })}
+						<a {...props} href={resolve('/(app)/account')}>
+							<UserRoundIcon class="size-3.5" />
+							account
+						</a>
+					{/snippet}
+				</DropdownMenu.Item>
+
+				{#if blockCount > 0}
+					<DropdownMenu.Item onSelect={() => (blocksOpen = true)}>
+						<UserXIcon class="size-3.5" />
+						blocked ({blockCount})
+					</DropdownMenu.Item>
+				{/if}
+
+				<DropdownMenu.Separator />
+
+				<DropdownMenu.Item onSelect={() => void handleSignOut()}>
+					<LogOutIcon class="size-3.5" />
+					sign out
+				</DropdownMenu.Item>
+			</DropdownMenu.Content>
+		</DropdownMenu.Root>
+	{/if}
+{/snippet}
 
 <AuthDialog bind:open={authOpen} />
 
