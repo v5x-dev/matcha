@@ -1,5 +1,5 @@
 import tailwindcss from '@tailwindcss/vite';
-import adapter from '@sveltejs/adapter-auto';
+import adapter from '@sveltejs/adapter-vercel';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vitest/config';
 
@@ -14,10 +14,12 @@ export default defineConfig({
 				experimental: { async: true }
 			},
 
-			// adapter-auto only supports some environments, see https://svelte.dev/docs/kit/adapter-auto for a list.
-			// If your environment is not supported, or you settled on a specific environment, switch out the adapter.
-			// See https://svelte.dev/docs/kit/adapters for more information about adapters.
-			adapter: adapter(),
+			// Pinned to the Vercel adapter rather than adapter-auto: adapter-auto installs the
+			// adapter mid-build, which resolves @vercel/nft's dependencies against an already
+			// hoisted tree. See https://svelte.dev/docs/kit/adapter-vercel for options.
+			// The runtime is pinned so the build does not depend on the Node version of whatever
+			// machine runs it; it matches the project's Node.js version on Vercel.
+			adapter: adapter({ runtime: 'nodejs24.x' }),
 			experimental: { remoteFunctions: true },
 
 			typescript: {
