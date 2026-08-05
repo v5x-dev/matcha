@@ -1,4 +1,4 @@
-import { error } from '@sveltejs/kit';
+import { httpError } from '$lib/server/http-error';
 import { Team, programs, rounds, type MatchData, type TeamData } from 'events.vex';
 import type {
 	MatchResult,
@@ -119,8 +119,8 @@ async function buildOverview(teamNumber: string): Promise<TeamOverview> {
 		{ teamNumber }
 	);
 	if (lookup.error || !lookup.data) {
-		if (lookup.response.status === 404 || !lookup.data) error(404, 'team not found');
-		error(502, 'team data unavailable');
+		if (lookup.response.status === 404 || !lookup.data) httpError(404, 'team not found');
+		httpError(502, 'team data unavailable');
 	}
 
 	const team: TeamData = lookup.data.getData();
@@ -263,7 +263,7 @@ function eventStart(events: { id: number; start?: string }[], id: number): strin
  */
 export async function getTeamOverview(teamNumber: string): Promise<TeamOverview> {
 	const normalized = teamNumber.trim().toUpperCase();
-	if (!normalized || normalized.length > 16) error(404, 'team not found');
+	if (!normalized || normalized.length > 16) httpError(404, 'team not found');
 
 	const cached = overviewCache.get(normalized);
 	if (cached && Date.now() - cached.cachedAt < OVERVIEW_TTL) return cached.data;

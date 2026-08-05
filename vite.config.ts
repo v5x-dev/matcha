@@ -26,8 +26,5 @@ export default defineConfig({
 				}
 			}
 		})
-	],
-	server: {
-		allowedHosts: ['amusing-counting-reroute.ngrok-free.dev']
-	}
+	]
 });

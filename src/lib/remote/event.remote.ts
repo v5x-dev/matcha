@@ -1,5 +1,5 @@
 import { query } from '$app/server';
-import { error } from '@sveltejs/kit';
+import { httpError } from '$lib/server/http-error';
 import * as cache from '$lib/server/event-cache';
 import type { EventData, MatchData } from 'events.vex';
 import { z } from 'zod';
@@ -26,7 +26,7 @@ export const searchEvents = query(searchSchema, async (input): Promise<EventSear
 export const getEvent = query('unchecked', async (id: number): Promise<EventData> => {
 	const event = await cache.getEvent(id);
 
-	if (!event) error(404, 'event not found');
+	if (!event) httpError(404, 'event not found');
 
 	return event;
 });
@@ -34,7 +34,7 @@ export const getEvent = query('unchecked', async (id: number): Promise<EventData
 export const listMatches = query('unchecked', async (eventId: number): Promise<MatchData[]> => {
 	const matches = await cache.listMatches(eventId);
 
-	if (!matches) error(404, 'event not found');
+	if (!matches) httpError(404, 'event not found');
 
 	return matches;
 });

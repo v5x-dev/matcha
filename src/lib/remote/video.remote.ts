@@ -1,5 +1,5 @@
 import { query } from '$app/server';
-import { error } from '@sveltejs/kit';
+import { httpError } from '$lib/server/http-error';
 import * as cache from '$lib/server/event-cache';
 import { discoverEventVideos, type EventVideoResult } from '$lib/server/youtube';
 import { z } from 'zod';
@@ -16,7 +16,7 @@ export const listEventVideos = query(
 	async (eventId: number): Promise<EventVideoResult> => {
 		const event = await cache.getEvent(eventId);
 
-		if (!event) error(404, 'event not found');
+		if (!event) httpError(404, 'event not found');
 
 		return discoverEventVideos(event);
 	}

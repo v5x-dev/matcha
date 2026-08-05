@@ -1,5 +1,5 @@
 import { command, getRequestEvent, query } from '$app/server';
-import { error } from '@sveltejs/kit';
+import { httpError } from '$lib/server/http-error';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '$lib/server/db';
@@ -93,7 +93,7 @@ const startSchema = z.object({
 
 function requireUser() {
 	const { locals } = getRequestEvent();
-	if (!locals.user) error(401, 'sign in to change playback calibration');
+	if (!locals.user) httpError(401, 'sign in to change playback calibration');
 	return locals.user;
 }
 
@@ -106,7 +106,7 @@ export const savePlaybackOffset = command(
 			.from(match)
 			.where(and(eq(match.id, input.matchId), eq(match.eventId, input.eventId)));
 
-		if (!cachedMatch) error(404, 'match not found');
+		if (!cachedMatch) httpError(404, 'match not found');
 
 		await db
 			.insert(eventPlaybackOffset)
@@ -145,7 +145,7 @@ export const clearPlaybackOffset = command(
 				)
 			);
 
-		if (!saved) error(400, 'this recording is still using its inferred event clock');
+		if (!saved) httpError(400, 'this recording is still using its inferred event clock');
 
 		await db
 			.delete(eventPlaybackOffset)
@@ -169,7 +169,7 @@ export const saveMatchPlaybackStart = command(
 			.from(match)
 			.where(and(eq(match.id, input.matchId), eq(match.eventId, input.eventId)));
 
-		if (!cachedMatch) error(404, 'match not found');
+		if (!cachedMatch) httpError(404, 'match not found');
 
 		await db
 			.insert(matchPlaybackStart)
@@ -197,7 +197,7 @@ export const saveMatchPlaybackWindow = command(
 			.from(match)
 			.where(and(eq(match.id, input.matchId), eq(match.eventId, input.eventId)));
 
-		if (!cachedMatch) error(404, 'match not found');
+		if (!cachedMatch) httpError(404, 'match not found');
 
 		await db
 			.insert(matchPlaybackWindow)

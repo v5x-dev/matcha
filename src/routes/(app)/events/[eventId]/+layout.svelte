@@ -1,11 +1,22 @@
 <script lang="ts">
 	import * as Sidebar from '$lib/components/ui/sidebar';
+	import ErrorState, { describeError, errorTitle } from '$lib/components/error-state.svelte';
 	import EventSidebar from './event-sidebar.svelte';
 
 	const { children, data } = $props();
 </script>
 
-<svelte:head><title>loading event · matcha</title></svelte:head>
+<!-- the page inside sets its own title once the event is here, so this only covers the two states
+	that render in its place -->
+<svelte:head>
+	{#await data.eventPage}
+		<title>loading event · matcha</title>
+	{:then}
+		<!-- the event page names itself -->
+	{:catch failure}
+		<title>{errorTitle(describeError(failure).status)} · matcha</title>
+	{/await}
+</svelte:head>
 
 {#await data.eventPage}
 	<div class="grid h-full place-items-center text-sm text-muted-foreground">loading event...</div>
@@ -19,8 +30,8 @@
 		</Sidebar.Inset>
 		<EventSidebar event={eventPage.event} matches={eventPage.matches} user={data.user} />
 	</Sidebar.Provider>
-{:catch}
-	<div class="grid h-full place-items-center text-sm text-muted-foreground">
-		event could not be loaded
-	</div>
+{:catch failure}
+	<!-- this load streams, so a missing event rejects here instead of reaching the error boundary -->
+	{@const described = describeError(failure)}
+	<ErrorState status={described.status} message={described.message} />
 {/await}

@@ -2,6 +2,7 @@
 	import { resolve } from '$app/paths';
 	import { getTeamOverview } from '$lib/remote/team.remote';
 	import { Badge } from '$lib/components/ui/badge';
+	import ErrorState, { describeError } from '$lib/components/error-state.svelte';
 	import {
 		formatRecord,
 		winRateLabel,
@@ -234,9 +235,9 @@
 				{/each}
 			</ol>
 		</div>
-	{:catch}
-		<div class="grid h-full place-items-center text-sm text-muted-foreground">
-			team {teamNumber} could not be loaded
-		</div>
+	{:catch failure}
+		<!-- the overview is a remote function, so its failures land here rather than on the boundary -->
+		{@const described = describeError(failure)}
+		<ErrorState status={described.status} message={described.message} />
 	{/await}
 </div>

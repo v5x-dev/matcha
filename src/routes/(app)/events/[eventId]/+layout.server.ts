@@ -1,4 +1,4 @@
-import { error } from '@sveltejs/kit';
+import { httpError } from '$lib/server/http-error';
 import { eq } from 'drizzle-orm';
 import * as cache from '$lib/server/event-cache';
 import { db } from '$lib/server/db';
@@ -20,7 +20,7 @@ async function optionalDatabaseRows<T>(query: Promise<T>, name: string): Promise
 
 async function loadEventPage(eventId: number) {
 	const event = await measureServer('event.load', () => cache.getEvent(eventId), { eventId });
-	if (!event) error(404, 'event not found');
+	if (!event) httpError(404, 'event not found');
 
 	const [matches, savedMatchWindows, savedMatchStarts, savedPlaybackOffsets] = await Promise.all([
 		measureServer('match.load', () => cache.listMatches(eventId), { eventId }),
@@ -59,7 +59,7 @@ async function loadEventPage(eventId: number) {
 		)
 	]);
 
-	if (!matches) error(404, 'event not found');
+	if (!matches) httpError(404, 'event not found');
 
 	return { event, matches, savedMatchWindows, savedMatchStarts, savedPlaybackOffsets };
 }
@@ -67,7 +67,7 @@ async function loadEventPage(eventId: number) {
 export function load({ params }) {
 	const eventId = Number(params.eventId);
 
-	if (!Number.isInteger(eventId) || eventId <= 0) error(404, 'event not found');
+	if (!Number.isInteger(eventId) || eventId <= 0) httpError(404, 'event not found');
 
 	// Keep remote cache/database work out of SvelteKit's navigation gate. The layout renders a small
 	// pending state while this nested promise streams to the client.
