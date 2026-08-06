@@ -1,6 +1,5 @@
 import type { EventLevel } from 'events.vex';
 import type { EventTimeframe } from '$lib/event-types';
-import { SvelteDate } from 'svelte/reactivity';
 
 export type Timeframe = EventTimeframe;
 
@@ -53,17 +52,4 @@ export class EventFilters {
 		this.regions = [];
 		this.timeframe = 'any';
 	}
-}
-
-const rangeFormatter = new Intl.DateTimeFormat('en-US', {
-	month: 'short',
-	day: 'numeric',
-	year: 'numeric'
-});
-
-export function formatRange(start?: string, end?: string): string {
-	if (!start) return 'date tbd';
-	return rangeFormatter
-		.formatRange(new SvelteDate(start), new SvelteDate(end ?? start))
-		.toLowerCase();
 }

@@ -30,6 +30,23 @@ export default defineConfig({
 		})
 	],
 
+	// Two dev servers in this directory both regenerate `.svelte-kit/generated/**` and both watch it,
+	// so each one's writes trigger the other's full-reload handler and the pair reload each other
+	// forever — the page never settles and edits appear to "break" the server. Without strictPort a
+	// second `vite dev` silently starts on 5174 and you get that loop instead of an error, so fail
+	// fast on a busy port rather than joining the fight.
+	//
+	// strictPort alone is not enough: the default host `localhost` resolves to both ::1 and
+	// 127.0.0.1, so two servers can each grab port 5173 on a different address family and neither
+	// sees the port as busy. The browser then resolves `localhost` per request and can fetch the
+	// document from one server and the modules from the other, which shows up as
+	// `hydration_mismatch` and a blank page. Pin a single literal address so the collision is real.
+	server: {
+		host: '127.0.0.1',
+		port: 5173,
+		strictPort: true
+	},
+
 	test: {
 		// server-side rules only for now: these are the parts where being wrong is expensive and
 		// invisible, and none of them need a dom

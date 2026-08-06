@@ -19,7 +19,7 @@
 	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import { onMount } from 'svelte';
-	import { SvelteURLSearchParams } from 'svelte/reactivity';
+	import { replaceState } from '$app/navigation';
 
 	const rangeFormatter = new Intl.DateTimeFormat('en-US', {
 		month: 'short',
@@ -32,7 +32,7 @@
 	const validTimeframes = new Set(timeframes.map((timeframe) => timeframe.value));
 
 	function readFiltersFromUrl(search: string) {
-		const params = new SvelteURLSearchParams(search);
+		const params = new URLSearchParams(search);
 		filters.query = params.get('q') ?? '';
 		filters.levels = params
 			.getAll('level')
@@ -51,8 +51,15 @@
 	let urlTimer: ReturnType<typeof setTimeout> | undefined;
 	let restoredScroll = false;
 
+	// Plain URLSearchParams on purpose: SvelteURLSearchParams tracks a reactive version counter that
+	// `set`/`append` increment and `toString` reads, so building one inside an effect makes the
+	// effect depend on state it just wrote and it re-runs until Svelte throws
+	// effect_update_depth_exceeded. Nothing here needs to be reactive — it is a pure serialization
+	// of `filters`, which is already reactive on its own.
 	function filterSearch() {
-		const params = new SvelteURLSearchParams();
+		// the reactive variant self-triggers here (see above) and this instance never escapes
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity
+		const params = new URLSearchParams();
 		if (filters.query.trim()) params.set('q', filters.query.trim());
 		for (const level of filters.levels) params.append('level', level);
 		for (const region of filters.regions) params.append('region', region);
@@ -69,8 +76,12 @@
 		if (urlTimer) clearTimeout(urlTimer);
 		urlTimer = setTimeout(() => {
 			const nextUrl = `${window.location.pathname}${search}${window.location.hash}`;
-			window.history.replaceState(window.history.state, '', nextUrl);
+			// Record the value first so the page.url effect below recognises this as our own write
+			// and does not bounce it back into `filters`.
 			lastUrlSearch = search;
+			// nextUrl reuses window.location.pathname, which already carries any configured base path
+			// eslint-disable-next-line svelte/no-navigation-without-resolve
+			replaceState(nextUrl, page.state);
 		}, 120);
 		return () => {
 			if (urlTimer) clearTimeout(urlTimer);
