@@ -2,6 +2,8 @@ import { page } from '$app/state';
 
 export const MATCH_PARAM = 'match';
 export const MATCH_RESTART_EVENT = 'matcha:restart-match';
+export const CLIP_PARAM = 'clip';
+export const CLIP_RESTART_EVENT = 'matcha:restart-clip';
 
 /** id of the match currently selected via `?match=`, or null when none is */
 export function activeMatchId(): number | null {
@@ -14,4 +16,13 @@ export function activeMatchId(): number | null {
 
 export function requestMatchRestart(id: number) {
 	window.dispatchEvent(new CustomEvent<number>(MATCH_RESTART_EVENT, { detail: id }));
+}
+
+/** id of the clip currently selected via `?clip=`, or null when none is selected */
+export function activeClipId(): string | null {
+	return page.url.searchParams.get(CLIP_PARAM);
+}
+
+export function requestClipRestart(id: string) {
+	window.dispatchEvent(new CustomEvent<string>(CLIP_RESTART_EVENT, { detail: id }));
 }

@@ -5,6 +5,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import * as Tabs from '$lib/components/ui/tabs';
 	import {
+		clearClipFlag,
 		clearMessageFlag,
 		dismissReports,
 		liftUserSanctions,
@@ -12,6 +13,7 @@
 		listFlaggedMessages,
 		listReportedMessages,
 		moderationAccess,
+		removeClip,
 		removeMessage,
 		sanctionChatUser,
 		setChatUserRole,
@@ -64,7 +66,8 @@
 	}
 
 	function matchHref(entry: ReportedMessage) {
-		return resolve(`/(app)/events/[eventId]?match=${entry.matchId}`, {
+		const clip = entry.contentType === 'clip' ? `&clip=${entry.messageId}` : '';
+		return resolve(`/(app)/events/[eventId]?match=${entry.matchId}${clip}`, {
 			eventId: entry.eventId.toString()
 		});
 	}
@@ -168,7 +171,7 @@
 					{:else if (flagged.current?.length ?? 0) === 0}
 						<p class="text-sm text-muted-foreground">automod has nothing waiting on you</p>
 					{:else}
-						{#each flagged.current ?? [] as entry (entry.messageId)}
+						{#each flagged.current ?? [] as entry (entry.contentType + entry.messageId)}
 							{@render queueRow(entry, false)}
 						{/each}
 					{/if}
@@ -246,6 +249,9 @@
 			{#if fromReports}
 				<Badge variant="secondary">{entry.reports} report{entry.reports === 1 ? '' : 's'}</Badge>
 			{/if}
+			{#if entry.contentType === 'clip'}
+				<Badge variant="outline">clip</Badge>
+			{/if}
 			{#if entry.reasons}
 				<span>{entry.reasons.split(',').join(', ')}</span>
 			{/if}
@@ -263,9 +269,16 @@
 					size="sm"
 					variant="destructive"
 					onclick={() =>
-						void run(async () => {
-							await removeMessage({ messageId: entry.messageId });
-						}, 'message removed')}
+						void run(
+							async () => {
+								if (entry.contentType === 'clip') {
+									await removeClip({ clipId: entry.messageId });
+								} else {
+									await removeMessage({ messageId: entry.messageId });
+								}
+							},
+							entry.contentType === 'clip' ? 'clip removed' : 'message removed'
+						)}
 				>
 					<TrashIcon class="size-3.5" />
 					delete
@@ -290,7 +303,11 @@
 					variant="outline"
 					onclick={() =>
 						void run(async () => {
-							await clearMessageFlag({ messageId: entry.messageId });
+							if (entry.contentType === 'clip') {
+								await clearClipFlag({ clipId: entry.messageId });
+							} else {
+								await clearMessageFlag({ messageId: entry.messageId });
+							}
 						}, 'flag cleared')}
 				>
 					<CheckIcon class="size-3.5" />

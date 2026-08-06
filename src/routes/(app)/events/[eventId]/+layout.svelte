@@ -28,7 +28,12 @@
 		<Sidebar.Inset class="h-full max-h-full overflow-hidden">
 			{@render children()}
 		</Sidebar.Inset>
-		<EventSidebar event={eventPage.event} matches={eventPage.matches} user={data.user} />
+		<EventSidebar
+			event={eventPage.event}
+			matches={eventPage.matches}
+			clips={eventPage.clips}
+			user={data.user}
+		/>
 	</Sidebar.Provider>
 {:catch failure}
 	<!-- this load streams, so a missing event rejects here instead of reaching the error boundary -->
