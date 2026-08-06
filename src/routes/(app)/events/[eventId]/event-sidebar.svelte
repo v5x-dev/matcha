@@ -7,7 +7,7 @@
 	import { eventRoundGroups } from '$lib/match-navigation';
 	import { activeMatchId, requestMatchRestart } from '$lib/match-param.svelte';
 	import { groupMatchesByStreamDay } from '$lib/stream-days';
-	import { Input } from '$lib/components/ui/input';
+	import * as InputGroup from '$lib/components/ui/input-group';
 	import type { EventData, MatchData } from 'events.vex';
 	import { createVirtualizer } from '@tanstack/svelte-virtual';
 	import Fuse from 'fuse.js';
@@ -17,6 +17,8 @@
 	import CoffeeIcon from '@lucide/svelte/icons/coffee';
 	import ListIcon from '@lucide/svelte/icons/list';
 	import MessageSquareIcon from '@lucide/svelte/icons/message-square';
+	import SearchIcon from '@lucide/svelte/icons/search';
+	import XIcon from '@lucide/svelte/icons/x';
 	import MatchChat from './match-chat.svelte';
 
 	let {
@@ -223,6 +225,12 @@
 		return allianceFor(match, color)?.score ?? 0;
 	}
 
+	function allianceLost(match: MatchData, color: AllianceColor) {
+		const alliance = allianceFor(match, color);
+		const opponent = allianceFor(match, color === 'blue' ? 'red' : 'blue');
+		return alliance !== undefined && opponent !== undefined && alliance.score < opponent.score;
+	}
+
 	function allianceTeams(match: MatchData, color: AllianceColor) {
 		return (
 			allianceFor(match, color)
@@ -238,7 +246,7 @@
 
 <Sidebar.Root variant="floating" side="right">
 	<Tabs.Root bind:value={tab} class="min-h-0 flex-1 gap-0">
-		<Sidebar.Header class="gap-3 pb-3">
+		<Sidebar.Header class="gap-1 pb-1">
 			<Sidebar.MenuButton class="font-semibold tracking-tight text-primary!">
 				{#snippet child({ props })}
 					<a {...props} href={resolve('/')}
@@ -247,17 +255,9 @@
 					>
 				{/snippet}
 			</Sidebar.MenuButton>
-			<p class="px-2 text-sm leading-5 font-medium text-sidebar-foreground!">
+			<p class="my-1 px-2 text-sm leading-5 font-medium text-muted-foreground!">
 				{event.name.split(':')[0].toLowerCase()}
 			</p>
-			<div class="px-2">
-				<Input
-					bind:value={matchQuery}
-					placeholder="search matches or teams..."
-					aria-label="search matches or teams"
-					class="text-sidebar-foreground placeholder:text-sidebar-foreground"
-				/>
-			</div>
 			<Tabs.List class="w-full">
 				<Tooltip.Root>
 					<Tooltip.Trigger>
@@ -281,6 +281,30 @@
 					<Tooltip.Content>match chat</Tooltip.Content>
 				</Tooltip.Root>
 			</Tabs.List>
+			<div>
+				<InputGroup.Root>
+					<InputGroup.Addon>
+						<SearchIcon />
+					</InputGroup.Addon>
+					<InputGroup.Input
+						bind:value={matchQuery}
+						placeholder="search matches or teams..."
+						aria-label="search matches or teams"
+						class="text-sidebar-foreground placeholder:text-muted-foreground"
+					/>
+					{#if matchQuery}
+						<InputGroup.Addon align="inline-end">
+							<InputGroup.Button
+								size="icon-xs"
+								aria-label="clear match search"
+								onclick={() => (matchQuery = '')}
+							>
+								<XIcon />
+							</InputGroup.Button>
+						</InputGroup.Addon>
+					{/if}
+				</InputGroup.Root>
+			</div>
 		</Sidebar.Header>
 
 		<Tabs.Content value="chat" class="flex min-h-0 flex-1 flex-col">
@@ -300,7 +324,7 @@
 					{/if}
 					{#if stickyHeading}
 						<Sidebar.GroupLabel
-							class="sticky top-0 z-20 rounded-none bg-sidebar text-sidebar-foreground!"
+							class="sticky top-0 z-20 rounded-none bg-sidebar text-muted-foreground!"
 						>
 							{stickyHeading.label}
 						</Sidebar.GroupLabel>
@@ -318,7 +342,7 @@
 									<Sidebar.GroupLabel
 										class="{virtualRow.index === stickyHeadingIndex
 											? 'invisible '
-											: ''}text-sidebar-foreground!">{row.label}</Sidebar.GroupLabel
+											: ''}text-muted-foreground!">{row.label}</Sidebar.GroupLabel
 									>
 								{:else}
 									<Sidebar.MenuButton
@@ -353,13 +377,14 @@
 																			>{/if}
 																		<a
 																			class="hover:text-foreground hover:underline"
+																			class:text-muted-foreground={allianceLost(row.match, 'blue')}
 																			href={teamHref(team)}>{team.toLowerCase()}</a
 																		>
 																	{:else}—{/each}
 																</span>
 															</span>
 															<span class="flex min-w-0 items-center gap-1 text-xs">
-																<span class="w-5 shrink-0 font-semibold text-red-200">
+																<span class="w-5 shrink-0 font-semibold text-red-300">
 																	{allianceScore(row.match, 'red')}
 																</span>
 																<span class="truncate text-sidebar-foreground!">
@@ -368,6 +393,7 @@
 																			>{/if}
 																		<a
 																			class="hover:text-foreground hover:underline"
+																			class:text-muted-foreground={allianceLost(row.match, 'red')}
 																			href={teamHref(team)}>{team.toLowerCase()}</a
 																		>
 																	{:else}—{/each}
