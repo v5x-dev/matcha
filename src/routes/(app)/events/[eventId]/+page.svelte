@@ -4,8 +4,11 @@
 	import {
 		activeClipId,
 		activeMatchId,
+		activeTimeSeconds,
 		CLIP_RESTART_EVENT,
-		MATCH_RESTART_EVENT
+		MATCH_RESTART_EVENT,
+		MATCH_PARAM,
+		TIME_PARAM
 	} from '$lib/match-param.svelte';
 	import { orderedEventMatches } from '$lib/match-navigation';
 	import AuthDialog from '$lib/components/auth-dialog.svelte';
@@ -37,6 +40,7 @@
 	import ClockArrowLeftIcon from '@lucide/svelte/icons/clock-arrow-left';
 	import ClockArrowRightIcon from '@lucide/svelte/icons/clock-arrow-right';
 	import ExpandIcon from '@lucide/svelte/icons/expand';
+	import LinkIcon from '@lucide/svelte/icons/link';
 	import PauseIcon from '@lucide/svelte/icons/pause';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
@@ -199,6 +203,14 @@
 	const youtubeUrl = $derived(
 		appliedVideoId
 			? `https://www.youtube.com/watch?v=${appliedVideoId}&t=${Math.floor(currentSeconds)}s`
+			: null
+	);
+
+	const shareUrl = $derived(
+		activeMatch
+			? resolve(`/(app)/events/[eventId]?match=${activeMatch.id}&t=${Math.floor(currentSeconds)}`, {
+					eventId: eventId.toString()
+				})
 			: null
 	);
 
@@ -557,6 +569,16 @@
 		await playerShell.requestFullscreen();
 	}
 
+	async function copyShareLink() {
+		if (!shareUrl) return;
+		try {
+			await navigator.clipboard.writeText(shareUrl);
+			toast.success('share link copied');
+		} catch {
+			toast.error('could not copy the share link');
+		}
+	}
+
 	async function restartActiveMatch() {
 		if (!player || !clipWindow) return;
 		scrubbing = true;
@@ -656,6 +678,7 @@
 			() => videos,
 			() => playback,
 			() => activeMatch,
+			() => activeTimeSeconds(),
 			() => savedMatchStarts,
 			() => savedMatchWindows,
 			() => savedPlaybackOffsets,
@@ -683,6 +706,14 @@
 			loopingMatch = false;
 
 			const initialWindow = activeMatch && playback ? clipWindow : null;
+			const requestedTimeSeconds = activeTimeSeconds();
+			const initialSeek =
+				initialWindow &&
+				requestedTimeSeconds !== null &&
+				requestedTimeSeconds >= initialWindow.startSeconds &&
+				requestedTimeSeconds <= initialWindow.endSeconds
+					? requestedTimeSeconds
+					: initialWindow?.startSeconds;
 			const sequence = ++updateSequence;
 
 			void (async () => {
@@ -697,7 +728,7 @@
 							autoplay: 1,
 							playsinline: 1,
 							rel: 0,
-							start: initialWindow?.startSeconds
+							start: initialSeek
 						}
 					});
 					createdPlayer = true;
@@ -720,15 +751,15 @@
 
 				if (playback && initialWindow) {
 					if (loadedVideoId === playback.video.videoId) {
-						await player!.seekTo(initialWindow.startSeconds, true);
+						await player!.seekTo(initialSeek!, true);
 					} else {
 						durationVideoId = null;
 						durationSeconds = 0;
 						loadedVideoId = playback.video.videoId;
-						await player!.loadVideoById(playback.video.videoId, initialWindow.startSeconds);
+						await player!.loadVideoById(playback.video.videoId, initialSeek ?? 0);
 					}
-					currentSeconds = initialWindow.startSeconds;
-					sliderSeconds = initialWindow.startSeconds;
+					currentSeconds = initialSeek ?? 0;
+					sliderSeconds = initialSeek ?? 0;
 				}
 
 				if (loadedVideoId) await loadDurationFor(loadedVideoId);
@@ -1014,6 +1045,25 @@
 					{/snippet}
 				</Tooltip.Trigger>
 				<Tooltip.Content>youtube</Tooltip.Content>
+			</Tooltip.Root>
+
+			<Tooltip.Root>
+				<Tooltip.Trigger>
+					{#snippet child({ props })}
+						<Button
+							{...props}
+							variant="ghost"
+							size="icon-sm"
+							class="inline-flex"
+							disabled={!shareUrl}
+							onclick={() => void copyShareLink()}
+							aria-label="share this moment"
+						>
+							<LinkIcon />
+						</Button>
+					{/snippet}
+				</Tooltip.Trigger>
+				<Tooltip.Content>share this moment</Tooltip.Content>
 			</Tooltip.Root>
 
 			<Popover.Root>
