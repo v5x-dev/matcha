@@ -245,7 +245,7 @@
 </script>
 
 <Sidebar.Root variant="floating" side="right">
-	<Tabs.Root bind:value={tab} class="min-h-0 flex-1 gap-0">
+	<Tabs.Root bind:value={tab} onValueChange={(value) => (tab = value)} class="min-h-0 flex-1 gap-0">
 		<Sidebar.Header class="gap-1 pb-1">
 			<Sidebar.MenuButton class="font-semibold tracking-tight text-primary!">
 				{#snippet child({ props })}
