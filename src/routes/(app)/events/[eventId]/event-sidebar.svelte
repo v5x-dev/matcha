@@ -281,30 +281,32 @@
 					<Tooltip.Content>match chat</Tooltip.Content>
 				</Tooltip.Root>
 			</Tabs.List>
-			<div>
-				<InputGroup.Root>
-					<InputGroup.Addon>
-						<SearchIcon />
-					</InputGroup.Addon>
-					<InputGroup.Input
-						bind:value={matchQuery}
-						placeholder="search matches or teams..."
-						aria-label="search matches or teams"
-						class="text-sidebar-foreground placeholder:text-muted-foreground"
-					/>
-					{#if matchQuery}
-						<InputGroup.Addon align="inline-end">
-							<InputGroup.Button
-								size="icon-xs"
-								aria-label="clear match search"
-								onclick={() => (matchQuery = '')}
-							>
-								<XIcon />
-							</InputGroup.Button>
+			{#if tab === 'matches'}
+				<div>
+					<InputGroup.Root>
+						<InputGroup.Addon>
+							<SearchIcon />
 						</InputGroup.Addon>
-					{/if}
-				</InputGroup.Root>
-			</div>
+						<InputGroup.Input
+							bind:value={matchQuery}
+							placeholder="search matches or teams..."
+							aria-label="search matches or teams"
+							class="text-sidebar-foreground placeholder:text-muted-foreground"
+						/>
+						{#if matchQuery}
+							<InputGroup.Addon align="inline-end">
+								<InputGroup.Button
+									size="icon-xs"
+									aria-label="clear match search"
+									onclick={() => (matchQuery = '')}
+								>
+									<XIcon />
+								</InputGroup.Button>
+							</InputGroup.Addon>
+						{/if}
+					</InputGroup.Root>
+				</div>
+			{/if}
 		</Sidebar.Header>
 
 		<Tabs.Content value="chat" class="flex min-h-0 flex-1 flex-col">

@@ -380,8 +380,10 @@
 					{/if}
 
 					<Button
-						size="sm"
-						class="h-7 rounded-full px-3"
+						variant="ghost"
+						size="icon-sm"
+						class="rounded-full"
+						aria-label="send message"
 						disabled={!match || draft.trim().length === 0 || sendMatchMessage.pending > 0}
 						onclick={() => void send()}
 					>
@@ -390,7 +392,6 @@
 						{:else}
 							<SendIcon />
 						{/if}
-						chat
 					</Button>
 				</div>
 			</div>
