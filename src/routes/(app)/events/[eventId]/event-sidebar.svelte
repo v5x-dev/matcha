@@ -5,7 +5,8 @@
 	import * as Tabs from '$lib/components/ui/tabs';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { eventRoundGroups } from '$lib/match-navigation';
-	import { activeMatchId, requestMatchRestart } from '$lib/match-param.svelte';
+	import { activeClipId, activeMatchId, requestMatchRestart } from '$lib/match-param.svelte';
+	import type { EventClip } from '$lib/remote/clip.remote';
 	import { groupMatchesByStreamDay } from '$lib/stream-days';
 	import * as InputGroup from '$lib/components/ui/input-group';
 	import type { EventData, MatchData } from 'events.vex';
@@ -18,16 +19,20 @@
 	import ListIcon from '@lucide/svelte/icons/list';
 	import MessageSquareIcon from '@lucide/svelte/icons/message-square';
 	import SearchIcon from '@lucide/svelte/icons/search';
+	import ScissorsIcon from '@lucide/svelte/icons/scissors';
 	import XIcon from '@lucide/svelte/icons/x';
+	import EventClips from './event-clips.svelte';
 	import MatchChat from './match-chat.svelte';
 
 	let {
 		event,
 		matches,
+		clips,
 		user
 	}: {
 		event: EventData;
 		matches: MatchData[];
+		clips: EventClip[];
 		user: { id: string; name: string } | null;
 	} = $props();
 
@@ -37,6 +42,7 @@
 
 	let tab = $state('matches');
 	let matchQuery = $state('');
+	let clipQuery = $state('');
 
 	function sortMatches(a: MatchData, b: MatchData): number {
 		return a.instance - b.instance || a.matchnum - b.matchnum;
@@ -80,7 +86,7 @@
 		// the sidebar is a sheet on mobile, so a pick has to get it out of the way of the film
 		if (sidebar.isMobile) sidebar.setOpenMobile(false);
 
-		if (matchId !== activeMatch) return;
+		if (matchId !== activeMatch || activeClipId()) return;
 
 		event.preventDefault();
 		requestMatchRestart(matchId);
@@ -280,6 +286,17 @@
 					</Tooltip.Trigger>
 					<Tooltip.Content>match chat</Tooltip.Content>
 				</Tooltip.Root>
+
+				<Tooltip.Root>
+					<Tooltip.Trigger>
+						{#snippet child({ props })}
+							<Tabs.Trigger {...props} value="clips" aria-label="clips">
+								<ScissorsIcon />
+							</Tabs.Trigger>
+						{/snippet}
+					</Tooltip.Trigger>
+					<Tooltip.Content>clips</Tooltip.Content>
+				</Tooltip.Root>
 			</Tabs.List>
 			{#if tab === 'matches'}
 				<div>
@@ -307,10 +324,40 @@
 					</InputGroup.Root>
 				</div>
 			{/if}
+			{#if tab === 'clips'}
+				<div>
+					<InputGroup.Root>
+						<InputGroup.Addon>
+							<SearchIcon />
+						</InputGroup.Addon>
+						<InputGroup.Input
+							bind:value={clipQuery}
+							placeholder="search clips..."
+							aria-label="search clips"
+							class="text-sidebar-foreground placeholder:text-muted-foreground"
+						/>
+						{#if clipQuery}
+							<InputGroup.Addon align="inline-end">
+								<InputGroup.Button
+									size="icon-xs"
+									aria-label="clear clip search"
+									onclick={() => (clipQuery = '')}
+								>
+									<XIcon />
+								</InputGroup.Button>
+							</InputGroup.Addon>
+						{/if}
+					</InputGroup.Root>
+				</div>
+			{/if}
 		</Sidebar.Header>
 
 		<Tabs.Content value="chat" class="flex min-h-0 flex-1 flex-col">
 			<MatchChat {eventId} match={activeMatchData} {user} />
+		</Tabs.Content>
+
+		<Tabs.Content value="clips" class="flex min-h-0 flex-1 flex-col">
+			<EventClips {eventId} {matches} {clips} {user} query={clipQuery} />
 		</Tabs.Content>
 
 		<Tabs.Content value="matches" class="flex min-h-0 flex-1 flex-col">

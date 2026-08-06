@@ -311,6 +311,36 @@ export const matchPlaybackWindow = sqliteTable(
 	(t) => [index('match_playback_window_event_idx').on(t.eventId)]
 );
 
+/** A public event clip, anchored to raw seconds in one event recording. */
+export const matchClip = sqliteTable(
+	'match_clip',
+	{
+		id: text('id')
+			.primaryKey()
+			.$defaultFn(() => crypto.randomUUID()),
+		eventId: integer('event_id').notNull(),
+		matchId: integer('match_id').notNull(),
+		videoId: text('video_id').notNull(),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		title: text('title').notNull(),
+		/** set when automod lets a title through but wants a moderator to review it. */
+		flaggedRule: text('flagged_rule'),
+		startSeconds: integer('start_seconds').notNull(),
+		endSeconds: integer('end_seconds').notNull(),
+		deletedAt: integer('deleted_at', { mode: 'timestamp_ms' }),
+		deletedBy: text('deleted_by').references(() => user.id, { onDelete: 'set null' }),
+		deletedReason: text('deleted_reason'),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+	},
+	(t) => [
+		index('match_clip_event_idx').on(t.eventId, t.createdAt),
+		index('match_clip_match_idx').on(t.matchId, t.createdAt),
+		index('match_clip_author_idx').on(t.userId, t.createdAt)
+	]
+);
+
 /** A manually chosen start that overrides the recording-wide calibration for one match only. */
 export const matchPlaybackStart = sqliteTable(
 	'match_playback_start',

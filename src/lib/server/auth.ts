@@ -7,13 +7,16 @@ import { getRequestEvent } from '$app/server';
 import { env } from '$env/dynamic/private';
 import { db } from './db';
 import * as schema from './db/schema';
-import { resolveBaseURL, resolveTrustedOrigins } from './base-url';
+import { resolveBaseURL, resolveTrustedOrigins, type BaseURLEnvironment } from './base-url';
 import { claimEmailSend } from './email-throttle';
 import { accountDeletionEmail, passwordResetEmail, sendEmail, verificationEmail } from './email';
 
 if (!env.BETTER_AUTH_SECRET) throw new Error('BETTER_AUTH_SECRET is not set');
 
-const resolution = resolveBaseURL(env, { dev });
+// `$env/dynamic/private` exposes a string index signature; cast it to the small set of deployment
+// variables this module actually reads so TypeScript 6's stricter weak-type check is satisfied.
+const baseUrlEnv = env as unknown as BaseURLEnvironment;
+const resolution = resolveBaseURL(baseUrlEnv, { dev });
 
 if (resolution.warning) console.warn(`[auth] ${resolution.warning}`);
 
@@ -51,7 +54,7 @@ export const auth = betterAuth({
 	baseURL: resolution.baseURL,
 	// the base url covers the common case; these cover the origins that legitimately differ from
 	// it — a preview reached through its branch alias, or a dev server on a non-default port.
-	trustedOrigins: resolveTrustedOrigins(env, { dev }),
+	trustedOrigins: resolveTrustedOrigins(baseUrlEnv, { dev }),
 	rateLimit: {
 		// better-auth only turns this on in production by default, which leaves the rules untested
 		// until the moment they are load bearing. running them locally too means a broken rule shows

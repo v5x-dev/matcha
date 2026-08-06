@@ -1,0 +1,1 @@
+ALTER TABLE `match_clip` ADD `flagged_rule` text;

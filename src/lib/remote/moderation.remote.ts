@@ -3,7 +3,7 @@ import { httpError } from '$lib/server/http-error';
 import { and, count, desc, eq, gt, isNotNull, isNull, max, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '$lib/server/db';
-import { matchMessage, messageReport, user, userSanction } from '$lib/server/db/schema';
+import { matchClip, matchMessage, messageReport, user, userSanction } from '$lib/server/db/schema';
 import type { UserRole } from '$lib/server/db/schema';
 import {
 	canModerate,
@@ -73,6 +73,7 @@ export const moderationAccess = query(async (): Promise<ModerationAccess> => {
 
 export type ReportedMessage = {
 	messageId: string;
+	contentType: 'message' | 'clip';
 	body: string;
 	createdAt: number;
 	deleted: boolean;
@@ -115,6 +116,7 @@ export const listReportedMessages = query(async (): Promise<ReportedMessage[]> =
 
 	return rows.map((row) => ({
 		messageId: row.messageId,
+		contentType: 'message' as const,
 		body: row.body,
 		createdAt: row.createdAt.getTime(),
 		deleted: row.deletedAt !== null,
@@ -133,38 +135,64 @@ export const listReportedMessages = query(async (): Promise<ReportedMessage[]> =
 export const listFlaggedMessages = query(async (): Promise<ReportedMessage[]> => {
 	await requireModerator();
 
-	const rows = await db
-		.select({
-			messageId: matchMessage.id,
-			body: matchMessage.body,
-			createdAt: matchMessage.createdAt,
-			deletedAt: matchMessage.deletedAt,
-			flaggedRule: matchMessage.flaggedRule,
-			authorId: user.id,
-			authorName: user.name,
-			eventId: matchMessage.eventId,
-			matchId: matchMessage.matchId
-		})
-		.from(matchMessage)
-		.innerJoin(user, eq(user.id, matchMessage.userId))
-		.where(and(isNull(matchMessage.deletedAt), isNotNull(matchMessage.flaggedRule)))
-		.orderBy(desc(matchMessage.createdAt))
-		.limit(50);
+	const [messageRows, clipRows] = await Promise.all([
+		db
+			.select({
+				messageId: matchMessage.id,
+				body: matchMessage.body,
+				createdAt: matchMessage.createdAt,
+				deletedAt: matchMessage.deletedAt,
+				flaggedRule: matchMessage.flaggedRule,
+				authorId: user.id,
+				authorName: user.name,
+				eventId: matchMessage.eventId,
+				matchId: matchMessage.matchId
+			})
+			.from(matchMessage)
+			.innerJoin(user, eq(user.id, matchMessage.userId))
+			.where(and(isNull(matchMessage.deletedAt), isNotNull(matchMessage.flaggedRule)))
+			.orderBy(desc(matchMessage.createdAt))
+			.limit(50),
+		db
+			.select({
+				messageId: matchClip.id,
+				body: matchClip.title,
+				createdAt: matchClip.createdAt,
+				deletedAt: matchClip.deletedAt,
+				flaggedRule: matchClip.flaggedRule,
+				authorId: user.id,
+				authorName: user.name,
+				eventId: matchClip.eventId,
+				matchId: matchClip.matchId
+			})
+			.from(matchClip)
+			.innerJoin(user, eq(user.id, matchClip.userId))
+			.where(and(isNull(matchClip.deletedAt), isNotNull(matchClip.flaggedRule)))
+			.orderBy(desc(matchClip.createdAt))
+			.limit(50)
+	]);
 
-	return rows.map((row) => ({
-		messageId: row.messageId,
-		body: row.body,
-		createdAt: row.createdAt.getTime(),
-		deleted: row.deletedAt !== null,
-		flaggedRule: row.flaggedRule,
-		authorId: row.authorId,
-		authorName: row.authorName,
-		eventId: row.eventId,
-		matchId: row.matchId,
-		reports: 0,
-		reasons: 'automod',
-		lastReportedAt: row.createdAt.getTime()
-	}));
+	return [
+		...messageRows.map((row) => ({ ...row, contentType: 'message' as const })),
+		...clipRows.map((row) => ({ ...row, contentType: 'clip' as const }))
+	]
+		.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+		.slice(0, 50)
+		.map((row) => ({
+			messageId: row.messageId,
+			contentType: row.contentType,
+			body: row.body,
+			createdAt: row.createdAt.getTime(),
+			deleted: row.deletedAt !== null,
+			flaggedRule: row.flaggedRule,
+			authorId: row.authorId,
+			authorName: row.authorName,
+			eventId: row.eventId,
+			matchId: row.matchId,
+			reports: 0,
+			reasons: 'automod',
+			lastReportedAt: row.createdAt.getTime()
+		}));
 });
 
 export const dismissReports = command(
@@ -193,6 +221,17 @@ export const clearMessageFlag = command(
 	}
 );
 
+export const clearClipFlag = command(
+	z.object({ clipId: z.string().min(1) }),
+	async ({ clipId }): Promise<void> => {
+		await requireModerator();
+
+		await db.update(matchClip).set({ flaggedRule: null }).where(eq(matchClip.id, clipId));
+
+		await listFlaggedMessages().refresh();
+	}
+);
+
 /** Removes a message from the moderation queue rather than from the chat panel. */
 export const removeMessage = command(
 	z.object({ messageId: z.string().min(1), reason: z.string().trim().max(200).optional() }),
@@ -215,6 +254,25 @@ export const removeMessage = command(
 			.where(and(eq(messageReport.messageId, messageId), eq(messageReport.status, 'open')));
 
 		await Promise.all([listReportedMessages().refresh(), listFlaggedMessages().refresh()]);
+	}
+);
+
+export const removeClip = command(
+	z.object({ clipId: z.string().min(1), reason: z.string().trim().max(200).optional() }),
+	async ({ clipId, reason }): Promise<void> => {
+		const actor = await requireModerator();
+		const now = new Date();
+
+		await db
+			.update(matchClip)
+			.set({
+				deletedAt: now,
+				deletedBy: actor.id,
+				deletedReason: reason || 'removed by a moderator'
+			})
+			.where(and(eq(matchClip.id, clipId), isNull(matchClip.deletedAt)));
+
+		await listFlaggedMessages().refresh();
 	}
 );
 

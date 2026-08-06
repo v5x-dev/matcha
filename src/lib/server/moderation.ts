@@ -21,6 +21,7 @@ import { env } from '$env/dynamic/private';
 import { db } from './db';
 import {
 	automodStrike,
+	matchClip,
 	matchMessage,
 	messageReport,
 	user,
@@ -65,7 +66,7 @@ export async function moderationIsUnstaffed(): Promise<boolean> {
  * its way into the tools, and two counts that drift apart are worse than one query shared.
  */
 export async function countModerationQueue(): Promise<number> {
-	const [[reports], [flags]] = await Promise.all([
+	const [[reports], [messageFlags], [clipFlags]] = await Promise.all([
 		db
 			.select({ total: countDistinct(messageReport.messageId) })
 			.from(messageReport)
@@ -74,10 +75,14 @@ export async function countModerationQueue(): Promise<number> {
 		db
 			.select({ total: count() })
 			.from(matchMessage)
-			.where(and(isNull(matchMessage.deletedAt), isNotNull(matchMessage.flaggedRule)))
+			.where(and(isNull(matchMessage.deletedAt), isNotNull(matchMessage.flaggedRule))),
+		db
+			.select({ total: count() })
+			.from(matchClip)
+			.where(and(isNull(matchClip.deletedAt), isNotNull(matchClip.flaggedRule)))
 	]);
 
-	return (reports?.total ?? 0) + (flags?.total ?? 0);
+	return (reports?.total ?? 0) + (messageFlags?.total ?? 0) + (clipFlags?.total ?? 0);
 }
 
 export type Actor = { id: string; email: string; role?: UserRole | null };

@@ -1,8 +1,16 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { activeMatchId, MATCH_RESTART_EVENT } from '$lib/match-param.svelte';
+	import {
+		activeClipId,
+		activeMatchId,
+		CLIP_RESTART_EVENT,
+		MATCH_RESTART_EVENT
+	} from '$lib/match-param.svelte';
 	import { orderedEventMatches } from '$lib/match-navigation';
+	import AuthDialog from '$lib/components/auth-dialog.svelte';
 	import { Button } from '$lib/components/ui/button';
+	import { Input } from '$lib/components/ui/input';
 	import * as Popover from '$lib/components/ui/popover';
 	import { useSidebar } from '$lib/components/ui/sidebar';
 	import * as Tooltip from '$lib/components/ui/tooltip';
@@ -13,7 +21,14 @@
 		saveMatchPlaybackWindow,
 		savePlaybackOffset
 	} from '$lib/remote/match-playback.remote';
+	import { createClip, getEventClip, listEventClips } from '$lib/remote/clip.remote';
 	import { listEventVideos, type EventVideo } from '$lib/remote/video.remote';
+	import {
+		isValidClipSpan,
+		MAX_CLIP_SECONDS,
+		MAX_CLIP_TITLE_LENGTH,
+		MIN_CLIP_SECONDS
+	} from '$lib/clips';
 	import { finishBrowserMetric, startBrowserMetric } from '$lib/client/performance';
 	import { groupMatchesByStreamDay, streamDayOf } from '$lib/stream-days';
 	import { matchPlayback, type MatchPlayback } from '$lib/video-playback';
@@ -27,6 +42,7 @@
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import PanelRightIcon from '@lucide/svelte/icons/panel-right';
+	import ScissorsIcon from '@lucide/svelte/icons/scissors';
 	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
 	import TimerResetIcon from '@lucide/svelte/icons/timer-reset';
 	import Volume2Icon from '@lucide/svelte/icons/volume-2';
@@ -47,11 +63,26 @@
 
 	const eventId = $derived(Number(params.eventId));
 	const event = $derived(eventPage.event);
+	const user = $derived(data.user);
 	const matches = $derived(eventPage.matches);
+	const clipsQuery = $derived(listEventClips(eventId));
+	const clips = $derived(clipsQuery.current ?? eventPage.clips);
+	const requestedClipId = $derived(activeClipId());
+	const requestedClipQuery = $derived(
+		requestedClipId ? getEventClip({ eventId, clipId: requestedClipId }) : null
+	);
 	const savedMatchStarts = $derived(eventPage.savedMatchStarts);
 	const savedMatchWindows = $derived(eventPage.savedMatchWindows);
 	const savedPlaybackOffsets = $derived(eventPage.savedPlaybackOffsets);
-	const activeMatch = $derived(matches.find((match) => match.id === activeMatchId()) ?? matches[0]);
+	const requestedClip = $derived(
+		requestedClipQuery?.current ?? clips.find((clip) => clip.id === requestedClipId) ?? null
+	);
+	const activeMatch = $derived(
+		matches.find(
+			(match) =>
+				match.id === activeMatchId() || (!activeMatchId() && match.id === requestedClip?.matchId)
+		) ?? matches[0]
+	);
 	const streamGrouping = $derived(groupMatchesByStreamDay(matches));
 	const orderedMatches = $derived(orderedEventMatches(matches, streamGrouping));
 	const activeMatchIndex = $derived(
@@ -120,6 +151,13 @@
 	const missingFilm = $derived(
 		!isDiscoveringVideos && activeMatch !== undefined && playback === null
 	);
+	const activeClip = $derived(
+		requestedClip &&
+			activeMatch?.id === requestedClip.matchId &&
+			playback?.video.videoId === requestedClip.videoId
+			? requestedClip
+			: null
+	);
 
 	let player: ReturnType<typeof YoutubePlayer> | undefined;
 	let loadedVideoId: string | undefined;
@@ -127,6 +165,9 @@
 	let appliedVideoId = $state<string | null>(null);
 	let appliedStartSeconds = $state<number | null>(null);
 	let appliedEndSeconds = $state<number | null>(null);
+	let appliedClipId = $state<string | null>(null);
+	let appliedClipStartSeconds = $state<number | null>(null);
+	let appliedClipEndSeconds = $state<number | null>(null);
 	let currentSeconds = $state(0);
 	let sliderSeconds = $state(0);
 	let durationSeconds = $state(0);
@@ -134,6 +175,12 @@
 	let isMuted = $state(true);
 	let scrubbing = false;
 	let loopingMatch = false;
+	let clipStart = $state<number | null>(null);
+	let clipEnd = $state<number | null>(null);
+	let clipMarkMatchId = $state<number | null>(null);
+	let clipMarkVideoId = $state<string | null>(null);
+	let clipTitle = $state('');
+	let clipAuthOpen = $state(false);
 	let progressTimer: ReturnType<typeof setTimeout> | undefined;
 	let progressInFlight = false;
 	let durationVideoId: string | null = null;
@@ -199,9 +246,18 @@
 		if (!activeMatch || !playback) return null;
 		return windowFor(activeMatch.id, playback);
 	});
-	const seekMinSeconds = $derived(matchWindow?.startSeconds ?? 0);
+	const clipWindow = $derived(
+		activeClip
+			? { startSeconds: activeClip.startSeconds, endSeconds: activeClip.endSeconds }
+			: matchWindow
+	);
+	const seekMinSeconds = $derived(clipWindow?.startSeconds ?? 0);
 	const seekMaxSeconds = $derived(
-		matchWindow?.endSeconds ?? Math.max(seekMinSeconds + 1, durationSeconds)
+		clipWindow?.endSeconds ?? Math.max(seekMinSeconds + 1, durationSeconds)
+	);
+	const calibrationMinSeconds = $derived(matchWindow?.startSeconds ?? 0);
+	const calibrationMaxSeconds = $derived(
+		matchWindow?.endSeconds ?? Math.max(calibrationMinSeconds + 1, durationSeconds)
 	);
 	const seekPosition = $derived(
 		Math.max(
@@ -212,20 +268,35 @@
 	const canSetStart = $derived(
 		matchWindow !== null && currentSeconds >= 0 && currentSeconds < durationSeconds
 	);
-	const canSetEnd = $derived(matchWindow !== null && currentSeconds > seekMinSeconds);
+	const canSetEnd = $derived(matchWindow !== null && currentSeconds > calibrationMinSeconds);
 	const canResetPlaybackOffset = $derived(
 		playback ? hasPlaybackOffset(playback.video.videoId) : false
 	);
-	const boundsSpanSeconds = $derived(Math.max(0, seekMaxSeconds - seekMinSeconds));
+	const boundsSpanSeconds = $derived(Math.max(0, calibrationMaxSeconds - calibrationMinSeconds));
 	// the calibration bar spans the match window rather than the whole recording: a match is a couple
 	// of minutes inside a stream that runs for hours, so window-relative is the only readable scale.
 	const boundsPlayhead = $derived(
 		boundsSpanSeconds > 0
-			? clamp(((currentSeconds - seekMinSeconds) / boundsSpanSeconds) * 100, 0, 100)
+			? clamp(((currentSeconds - calibrationMinSeconds) / boundsSpanSeconds) * 100, 0, 100)
 			: 0
 	);
 	const isPlayheadInBounds = $derived(
-		durationSeconds > 0 && currentSeconds >= seekMinSeconds && currentSeconds <= seekMaxSeconds
+		durationSeconds > 0 &&
+			currentSeconds >= calibrationMinSeconds &&
+			currentSeconds <= calibrationMaxSeconds
+	);
+	const clipSpanSeconds = $derived(
+		clipStart !== null && clipEnd !== null ? clipEnd - clipStart : null
+	);
+	const canSaveClip = $derived(
+		activeMatch !== undefined &&
+			playback !== null &&
+			clipMarkMatchId === activeMatch.id &&
+			clipMarkVideoId === playback.video.videoId &&
+			clipStart !== null &&
+			clipEnd !== null &&
+			isValidClipSpan(clipStart, clipEnd) &&
+			clipTitle.trim().length <= MAX_CLIP_TITLE_LENGTH
 	);
 
 	function formatTime(value: number): string {
@@ -247,18 +318,95 @@
 		return Math.max(min, Math.min(max, value));
 	}
 
-	function showCalibrationError(error: unknown) {
-		const description =
-			error instanceof Error && error.message
-				? error.message.toLowerCase()
-				: 'an unexpected error occurred';
+	function reasonFrom(error: unknown, fallback: string): string {
+		const body = (error as { body?: { message?: string } } | undefined)?.body;
+		if (body?.message) return body.message.toLowerCase();
+		if (error instanceof Error && error.message) return error.message.toLowerCase();
+		return fallback;
+	}
 
-		toast.error('calibration could not be saved', { description });
+	function showCalibrationError(error: unknown) {
+		toast.error('calibration could not be saved', {
+			description: reasonFrom(error, 'an unexpected error occurred')
+		});
 	}
 
 	function saveCalibration(action: () => Promise<void>) {
 		void action().catch(showCalibrationError);
 	}
+
+	function clearClipMarks() {
+		clipStart = null;
+		clipEnd = null;
+		clipMarkMatchId = null;
+		clipMarkVideoId = null;
+	}
+
+	async function markClipIn() {
+		if (!activeMatch || !playback) return;
+		const matchId = activeMatch.id;
+		const videoId = playback.video.videoId;
+		const playerSeconds = player ? await player.getCurrentTime().catch(() => undefined) : undefined;
+		if (activeMatch?.id !== matchId || playback?.video.videoId !== videoId) return;
+		if (clipMarkMatchId !== activeMatch.id || clipMarkVideoId !== playback.video.videoId) {
+			clearClipMarks();
+		}
+		clipMarkMatchId = matchId;
+		clipMarkVideoId = videoId;
+		clipStart = Math.max(0, Math.floor(playerSeconds ?? currentSeconds));
+	}
+
+	async function markClipOut() {
+		if (!activeMatch || !playback) return;
+		const matchId = activeMatch.id;
+		const videoId = playback.video.videoId;
+		const playerSeconds = player ? await player.getCurrentTime().catch(() => undefined) : undefined;
+		if (activeMatch?.id !== matchId || playback?.video.videoId !== videoId) return;
+		if (clipMarkMatchId !== activeMatch.id || clipMarkVideoId !== playback.video.videoId) {
+			clearClipMarks();
+		}
+		clipMarkMatchId = matchId;
+		clipMarkVideoId = videoId;
+		clipEnd = Math.max(0, Math.floor(playerSeconds ?? currentSeconds));
+	}
+
+	async function saveClip() {
+		if (!canSaveClip || !activeMatch || !playback || clipStart === null || clipEnd === null) return;
+		const title =
+			clipTitle.trim() ||
+			activeMatch.name.trim().toLowerCase().slice(0, MAX_CLIP_TITLE_LENGTH) ||
+			'clip';
+
+		try {
+			await createClip({
+				eventId,
+				matchId: activeMatch.id,
+				videoId: playback.video.videoId,
+				title,
+				startSeconds: clipStart,
+				endSeconds: clipEnd
+			});
+			clearClipMarks();
+			clipTitle = '';
+			await clipsQuery.refresh();
+			toast.success('clip saved');
+		} catch (error) {
+			toast.error('clip could not be saved', {
+				description: reasonFrom(error, 'an unexpected error occurred')
+			});
+		}
+	}
+
+	$effect(() => {
+		const currentMatchId = activeMatch?.id ?? null;
+		const currentVideoId = playback?.video.videoId ?? null;
+		if (
+			(clipMarkMatchId !== null || clipMarkVideoId !== null) &&
+			(clipMarkMatchId !== currentMatchId || clipMarkVideoId !== currentVideoId)
+		) {
+			clearClipMarks();
+		}
+	});
 
 	function stopProgressPolling() {
 		if (progressTimer) clearTimeout(progressTimer);
@@ -277,6 +425,16 @@
 		});
 	}
 
+	function clearActiveClip() {
+		if (!activeMatch) return;
+		void goto(
+			resolve(`/(app)/events/[eventId]?match=${activeMatch.id}`, {
+				eventId: eventId.toString()
+			}),
+			{ replaceState: true, keepFocus: true, noScroll: true }
+		);
+	}
+
 	async function refreshProgress() {
 		if (!player || progressInFlight || document.hidden || !isPlaying) return;
 		progressInFlight = true;
@@ -284,7 +442,7 @@
 		try {
 			const nextCurrent = await player.getCurrentTime();
 
-			const currentWindow = matchWindow;
+			const currentWindow = clipWindow;
 			if (
 				!scrubbing &&
 				!loopingMatch &&
@@ -400,13 +558,13 @@
 	}
 
 	async function restartActiveMatch() {
-		if (!player || !matchWindow) return;
+		if (!player || !clipWindow) return;
 		scrubbing = true;
-		currentSeconds = matchWindow.startSeconds;
-		sliderSeconds = matchWindow.startSeconds;
+		currentSeconds = clipWindow.startSeconds;
+		sliderSeconds = clipWindow.startSeconds;
 
 		try {
-			await player.seekTo(matchWindow.startSeconds, true);
+			await player.seekTo(clipWindow.startSeconds, true);
 			await player.playVideo();
 			isPlaying = true;
 			scheduleProgressPolling();
@@ -500,7 +658,10 @@
 			() => activeMatch,
 			() => savedMatchStarts,
 			() => savedMatchWindows,
-			() => savedPlaybackOffsets
+			() => savedPlaybackOffsets,
+			() => activeClip?.id,
+			() => activeClip?.startSeconds,
+			() => activeClip?.endSeconds
 		],
 		() => {
 			// a match the recordings do not cover must not silently keep another day's film playing
@@ -509,6 +670,9 @@
 				stopProgressPolling();
 				void player?.pauseVideo();
 				appliedMatchId = null;
+				appliedClipId = null;
+				appliedClipStartSeconds = null;
+				appliedClipEndSeconds = null;
 				appliedStartSeconds = null;
 				appliedEndSeconds = null;
 				return;
@@ -518,7 +682,7 @@
 			if (!initialVideo) return;
 			loopingMatch = false;
 
-			const initialWindow = activeMatch && playback ? windowFor(activeMatch.id, playback) : null;
+			const initialWindow = activeMatch && playback ? clipWindow : null;
 			const sequence = ++updateSequence;
 
 			void (async () => {
@@ -575,8 +739,11 @@
 				if (sequence === updateSequence) {
 					appliedMatchId = playback ? (activeMatch?.id ?? null) : null;
 					appliedVideoId = loadedVideoId ?? null;
-					appliedStartSeconds = initialWindow?.startSeconds ?? null;
-					appliedEndSeconds = initialWindow?.endSeconds ?? null;
+					appliedStartSeconds = matchWindow?.startSeconds ?? null;
+					appliedEndSeconds = matchWindow?.endSeconds ?? null;
+					appliedClipId = activeClip?.id ?? null;
+					appliedClipStartSeconds = activeClip?.startSeconds ?? null;
+					appliedClipEndSeconds = activeClip?.endSeconds ?? null;
 				}
 			})();
 		}
@@ -588,7 +755,13 @@
 			if (matchId === activeMatch?.id) void restartActiveMatch();
 		}
 
+		function handleClipRestart(event: Event) {
+			const clipId = (event as CustomEvent<string>).detail;
+			if (clipId === activeClip?.id) void restartActiveMatch();
+		}
+
 		window.addEventListener(MATCH_RESTART_EVENT, handleRestart);
+		window.addEventListener(CLIP_RESTART_EVENT, handleClipRestart);
 		function handleVisibilityChange() {
 			scheduleProgressPolling();
 		}
@@ -596,6 +769,7 @@
 		document.addEventListener('visibilitychange', handleVisibilityChange);
 		return () => {
 			window.removeEventListener(MATCH_RESTART_EVENT, handleRestart);
+			window.removeEventListener(CLIP_RESTART_EVENT, handleClipRestart);
 			document.removeEventListener('visibilitychange', handleVisibilityChange);
 		};
 	});
@@ -626,6 +800,9 @@
 	data-video-id={appliedVideoId}
 	data-start-seconds={appliedStartSeconds}
 	data-end-seconds={appliedEndSeconds}
+	data-clip-id={appliedClipId}
+	data-clip-start-seconds={appliedClipStartSeconds}
+	data-clip-end-seconds={appliedClipEndSeconds}
 	data-current-seconds={Math.floor(currentSeconds)}
 	data-slider-seconds={Math.floor(sliderSeconds)}
 	data-duration-seconds={Math.floor(durationSeconds)}
@@ -957,12 +1134,12 @@
 							<div class="flex items-baseline justify-between gap-3 text-xs">
 								<span class="text-muted-foreground">
 									start <span class="ml-0.5 font-medium text-foreground">
-										{formatTime(seekMinSeconds)}
+										{formatTime(calibrationMinSeconds)}
 									</span>
 								</span>
 								<span class="text-muted-foreground">
 									<span class="mr-0.5 font-medium text-foreground">
-										{formatTime(seekMaxSeconds)}
+										{formatTime(calibrationMaxSeconds)}
 									</span> end
 								</span>
 							</div>
@@ -990,6 +1167,116 @@
 								<ClockArrowRightIcon /> set end
 							</Button>
 						</div>
+					</div>
+				</Popover.Content>
+			</Popover.Root>
+
+			<Popover.Root>
+				<Popover.Trigger>
+					{#snippet child({ props })}
+						<Button
+							{...props}
+							variant="ghost"
+							size="icon-sm"
+							disabled={durationSeconds <= 0 || isDiscoveringVideos || missingFilm}
+							aria-label="create clip"
+						>
+							<ScissorsIcon />
+						</Button>
+					{/snippet}
+				</Popover.Trigger>
+				<Popover.Content align="start" class="w-88 gap-0 p-0">
+					<Popover.Header class="gap-0 p-4 pb-3">
+						<div class="flex items-start gap-2.5">
+							<div class="flex min-w-0 flex-1 items-start gap-2.5">
+								<span
+									class="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary"
+								>
+									<ScissorsIcon class="size-4" />
+								</span>
+								<div class="flex min-w-0 flex-col gap-0.5">
+									<Popover.Title>save a clip</Popover.Title>
+									<Popover.Description class="text-xs">
+										mark a short moment from this match
+									</Popover.Description>
+								</div>
+							</div>
+							{#if activeClip}
+								<Button
+									variant="ghost"
+									size="sm"
+									class="h-7 shrink-0 px-2 text-xs"
+									onclick={clearActiveClip}
+								>
+									play full match
+								</Button>
+							{/if}
+						</div>
+						<div
+							class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-muted/60 px-3 py-2"
+						>
+							<span class="text-xs text-muted-foreground">playhead</span>
+							<span class="text-sm font-medium">{formatTime(currentSeconds)}</span>
+						</div>
+					</Popover.Header>
+
+					<div class="flex flex-col gap-3 border-t border-border/60 p-4">
+						<div class="grid grid-cols-2 gap-2">
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={durationSeconds <= 0 || isDiscoveringVideos || missingFilm}
+								onclick={markClipIn}
+							>
+								<ClockArrowLeftIcon /> mark in
+							</Button>
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={durationSeconds <= 0 || isDiscoveringVideos || missingFilm}
+								onclick={markClipOut}
+							>
+								<ClockArrowRightIcon /> mark out
+							</Button>
+						</div>
+
+						<div class="rounded-lg bg-muted/60 px-3 py-2 text-xs">
+							<div class="flex items-center justify-between gap-2">
+								<span class="text-muted-foreground">clip span</span>
+								<span class="font-medium">
+									{clipSpanSeconds === null
+										? 'mark in and out'
+										: formatTime(Math.max(0, clipSpanSeconds))}
+								</span>
+							</div>
+							<p class="mt-1 text-muted-foreground">
+								between {formatTime(MIN_CLIP_SECONDS)} and {formatTime(MAX_CLIP_SECONDS)}
+							</p>
+						</div>
+
+						<Input
+							bind:value={clipTitle}
+							maxlength={MAX_CLIP_TITLE_LENGTH}
+							placeholder={activeMatch?.name.toLowerCase() ?? 'clip title'}
+							aria-label="clip title"
+						/>
+
+						{#if user}
+							<Button
+								size="sm"
+								disabled={!canSaveClip || createClip.pending > 0}
+								onclick={() => void saveClip()}
+							>
+								{createClip.pending > 0 ? 'saving clip...' : 'save clip'}
+							</Button>
+						{:else}
+							<div class="flex flex-col gap-2">
+								<p class="text-xs text-muted-foreground">sign in to save a public clip</p>
+								<Button size="sm" variant="outline" onclick={() => (clipAuthOpen = true)}>
+									sign in to save clip
+								</Button>
+							</div>
+						{/if}
 					</div>
 				</Popover.Content>
 			</Popover.Root>
@@ -1032,6 +1319,8 @@
 		</div>
 	</div>
 </div>
+
+<AuthDialog bind:open={clipAuthOpen} />
 
 <style>
 	/* youtube-player swaps the mount div for an iframe with its own default dimensions */
