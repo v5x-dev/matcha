@@ -3,6 +3,8 @@ import { and, desc, eq, isNull } from 'drizzle-orm';
 import * as cache from '$lib/server/event-cache';
 import { db } from '$lib/server/db';
 import {
+	event as eventTable,
+	match as matchTable,
 	eventPlaybackOffset,
 	matchClip,
 	matchPlaybackStart,
@@ -89,12 +91,45 @@ async function loadEventPage(eventId: number) {
 	return { event, matches, savedMatchWindows, savedMatchStarts, savedPlaybackOffsets, clips };
 }
 
-export function load({ params }) {
+export async function load({ params, url }) {
 	const eventId = Number(params.eventId);
 
 	if (!Number.isInteger(eventId) || eventId <= 0) httpError(404, 'event not found');
 
+	const clipId = url.searchParams.get('clip');
+	// The clip landing page has to render useful Open Graph tags before any client-side JS runs —
+	// Discord and friends never execute our remote functions. This lookup is small and only happens
+	// when the link carries a clip id, so it is fine to wait on it eagerly.
+	const clipMeta = clipId ? await loadClipMeta(eventId, clipId) : null;
+
 	// Keep remote cache/database work out of SvelteKit's navigation gate. The layout renders a small
 	// pending state while this nested promise streams to the client.
-	return { eventPage: loadEventPage(eventId) };
+	return { eventPage: loadEventPage(eventId), clipMeta };
+}
+
+/** the clip's own metadata for share cards: title, match, event, and a video thumbnail. */
+function loadClipMeta(eventId: number, clipId: string) {
+	return db
+		.select({
+			id: matchClip.id,
+			title: matchClip.title,
+			videoId: matchClip.videoId,
+			authorName: user.name,
+			matchId: matchClip.matchId,
+			matchName: matchTable.name,
+			eventName: eventTable.name
+		})
+		.from(matchClip)
+		.innerJoin(user, eq(user.id, matchClip.userId))
+		.innerJoin(matchTable, eq(matchTable.id, matchClip.matchId))
+		.innerJoin(eventTable, eq(eventTable.id, matchClip.eventId))
+		.where(
+			and(eq(matchClip.id, clipId), eq(matchClip.eventId, eventId), isNull(matchClip.deletedAt))
+		)
+		.limit(1)
+		.then((rows) => rows[0] ?? null)
+		.catch((error) => {
+			console.error('clip metadata unavailable; rendering without og tags', error);
+			return null;
+		});
 }

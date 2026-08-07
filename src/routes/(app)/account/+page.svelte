@@ -8,6 +8,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import AuthDialog from '$lib/components/auth-dialog.svelte';
+	import UserMenu from '$lib/components/user-menu.svelte';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
 	import MailCheckIcon from '@lucide/svelte/icons/mail-check';
@@ -59,11 +60,14 @@
 
 <div class="h-full overflow-y-auto">
 	<div class="mx-auto flex max-w-2xl flex-col gap-6 p-4 sm:p-6">
-		<div>
-			<h1 class="text-lg font-semibold">your account</h1>
-			<p class="text-xs text-muted-foreground">
-				what matcha knows about you, and how to make it stop
-			</p>
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h1 class="text-lg font-semibold">your account</h1>
+				<p class="text-xs text-muted-foreground">
+					what matcha knows about you, and how to make it stop
+				</p>
+			</div>
+			<UserMenu {user} />
 		</div>
 
 		{#if !user}

@@ -11,6 +11,7 @@
 		startBrowserMetric
 	} from '$lib/client/performance';
 	import { Badge } from '$lib/components/ui/badge';
+	import UserMenu from '$lib/components/user-menu.svelte';
 	import EventFiltersSheet from './event-filters-sheet.svelte';
 	import { EventFilters, levels, timeframes } from './event-filters.svelte';
 	import { page } from '$app/state';
@@ -45,6 +46,8 @@
 			? (timeframe as (typeof timeframes)[number]['value'])
 			: 'any';
 	}
+
+	const user = $derived(page.data.user);
 
 	readFiltersFromUrl(page.url.search);
 	let lastUrlSearch = page.url.search;
@@ -249,36 +252,39 @@
 
 <div class="flex h-full flex-col gap-0" inert={filtersOpen}>
 	<h1 class="sr-only">events</h1>
-	<div class="p-2">
-		<InputGroup.Root>
-			<InputGroup.Addon>
-				<SearchIcon />
-			</InputGroup.Addon>
-			<InputGroup.Input placeholder="search events..." bind:value={filters.query} />
-			<InputGroup.Addon align="inline-end">
-				{#if filters.query}
-					<InputGroup.Button
-						size="icon-xs"
-						aria-label="clear search"
-						onclick={() => (filters.query = '')}
-					>
-						<XIcon />
-					</InputGroup.Button>
-				{/if}
-				<InputGroup.Button
-					size={filters.facetCount > 0 ? 'xs' : 'icon-xs'}
-					aria-label="filters"
-					onclick={() => (filtersOpen = true)}
-				>
-					<SlidersHorizontalIcon />
-					{#if filters.facetCount > 0}
-						<Badge class="size-4 min-w-4 shrink-0 rounded-full p-0 text-[10px] leading-none">
-							{filters.facetCount}
-						</Badge>
+	<div class="flex items-center gap-2 p-2">
+		<div class="min-w-0 flex-1">
+			<InputGroup.Root>
+				<InputGroup.Addon>
+					<SearchIcon />
+				</InputGroup.Addon>
+				<InputGroup.Input placeholder="search events..." bind:value={filters.query} />
+				<InputGroup.Addon align="inline-end">
+					{#if filters.query}
+						<InputGroup.Button
+							size="icon-xs"
+							aria-label="clear search"
+							onclick={() => (filters.query = '')}
+						>
+							<XIcon />
+						</InputGroup.Button>
 					{/if}
-				</InputGroup.Button>
-			</InputGroup.Addon>
-		</InputGroup.Root>
+					<InputGroup.Button
+						size={filters.facetCount > 0 ? 'xs' : 'icon-xs'}
+						aria-label="filters"
+						onclick={() => (filtersOpen = true)}
+					>
+						<SlidersHorizontalIcon />
+						{#if filters.facetCount > 0}
+							<Badge class="size-4 min-w-4 shrink-0 rounded-full p-0 text-[10px] leading-none">
+								{filters.facetCount}
+							</Badge>
+						{/if}
+					</InputGroup.Button>
+				</InputGroup.Addon>
+			</InputGroup.Root>
+		</div>
+		<UserMenu {user} />
 	</div>
 
 	<div class="relative min-h-0 flex-1">

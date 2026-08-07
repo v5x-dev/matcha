@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import { getTeamOverview } from '$lib/remote/team.remote';
 	import { Badge } from '$lib/components/ui/badge';
+	import UserMenu from '$lib/components/user-menu.svelte';
 	import ErrorState, { describeError } from '$lib/components/error-state.svelte';
 	import {
 		formatRecord,
@@ -26,6 +28,7 @@
 	const { params } = $props();
 	const teamNumber = $derived(params.teamNumber.trim().toLowerCase());
 	const overview = $derived(getTeamOverview(teamNumber));
+	const user = $derived(page.data.user);
 
 	const matchHref = (match: TeamMatchSummary) =>
 		resolve(`/(app)/events/[eventId]?match=${match.id}`, { eventId: match.eventId.toString() });
@@ -69,6 +72,7 @@
 				<span class="text-sm text-muted-foreground">
 					{(data.team.organization ?? 'unknown org').toLowerCase()} · {teamLocation(data.team)}
 				</span>
+				<UserMenu class="ml-auto self-center" {user} />
 			</header>
 
 			<p class="flex flex-wrap gap-x-4 gap-y-1 pb-6 text-sm">

@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import * as Tabs from '$lib/components/ui/tabs';
+	import UserMenu from '$lib/components/user-menu.svelte';
 	import {
 		clearClipFlag,
 		clearMessageFlag,
@@ -25,6 +27,7 @@
 	import TrashIcon from '@lucide/svelte/icons/trash-2';
 
 	const access = moderationAccess();
+	const user = $derived(page.data.user);
 	const reports = listReportedMessages();
 	const flagged = listFlaggedMessages();
 	const sanctions = listActiveSanctions();
@@ -104,7 +107,10 @@
 	{#if access.loading}
 		<p class="p-6 text-sm text-muted-foreground">checking your access...</p>
 	{:else if !access.current?.canModerate}
-		<div class="grid h-full place-items-center p-6 text-center">
+		<div class="relative grid h-full place-items-center p-6 text-center">
+			<div class="absolute top-4 right-4">
+				<UserMenu {user} />
+			</div>
 			{#if access.current?.unstaffed}
 				<div class="flex max-w-md flex-col items-center gap-2">
 					<ShieldIcon class="size-6 text-muted-foreground" />
@@ -126,11 +132,14 @@
 		</div>
 	{:else}
 		<div class="mx-auto flex max-w-4xl flex-col gap-4 p-4 sm:p-6">
-			<div>
-				<h1 class="text-lg font-semibold">chat moderation</h1>
-				<p class="text-xs text-muted-foreground">
-					reports, automod flags, and everyone currently muted or banned
-				</p>
+			<div class="flex items-start justify-between gap-4">
+				<div>
+					<h1 class="text-lg font-semibold">chat moderation</h1>
+					<p class="text-xs text-muted-foreground">
+						reports, automod flags, and everyone currently muted or banned
+					</p>
+				</div>
+				<UserMenu {user} />
 			</div>
 
 			<Tabs.Root value="reports">

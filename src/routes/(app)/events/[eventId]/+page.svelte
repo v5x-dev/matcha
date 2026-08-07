@@ -6,9 +6,7 @@
 		activeMatchId,
 		activeTimeSeconds,
 		CLIP_RESTART_EVENT,
-		MATCH_RESTART_EVENT,
-		MATCH_PARAM,
-		TIME_PARAM
+		MATCH_RESTART_EVENT
 	} from '$lib/match-param.svelte';
 	import { orderedEventMatches } from '$lib/match-navigation';
 	import AuthDialog from '$lib/components/auth-dialog.svelte';
@@ -208,9 +206,16 @@
 
 	const shareUrl = $derived(
 		activeMatch
-			? resolve(`/(app)/events/[eventId]?match=${activeMatch.id}&t=${Math.floor(currentSeconds)}`, {
-					eventId: eventId.toString()
-				})
+			? activeClip
+				? resolve(`/(app)/events/[eventId]?match=${activeClip.matchId}&clip=${activeClip.id}`, {
+						eventId: eventId.toString()
+					})
+				: resolve(
+						`/(app)/events/[eventId]?match=${activeMatch.id}&t=${Math.floor(currentSeconds)}`,
+						{
+							eventId: eventId.toString()
+						}
+					)
 			: null
 	);
 

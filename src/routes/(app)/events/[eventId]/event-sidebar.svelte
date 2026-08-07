@@ -10,6 +10,7 @@
 	import { groupMatchesByStreamDay } from '$lib/stream-days';
 	import * as InputGroup from '$lib/components/ui/input-group';
 	import type { EventData, MatchData } from 'events.vex';
+	import UserMenu from '$lib/components/user-menu.svelte';
 	import { createVirtualizer } from '@tanstack/svelte-virtual';
 	import Fuse from 'fuse.js';
 	import { watch } from 'runed';
@@ -33,11 +34,20 @@
 		event: EventData;
 		matches: MatchData[];
 		clips: EventClip[];
-		user: { id: string; name: string } | null;
+		user: { id: string; name: string; email?: string | null } | null;
 	} = $props();
 
 	const eventId = $derived(Number(page.params.eventId));
-	const activeMatch = $derived(activeMatchId() ?? matches[0]?.id ?? null);
+	const activeMatch = $derived.by(() => {
+		const matchParam = activeMatchId();
+		if (matchParam !== null) return matchParam;
+
+		const clipId = activeClipId();
+		const clipMatchId = clipId ? (clips.find((clip) => clip.id === clipId)?.matchId ?? null) : null;
+		if (clipMatchId !== null) return clipMatchId;
+
+		return matches[0]?.id ?? null;
+	});
 	const activeMatchData = $derived(matches.find((match) => match.id === activeMatch) ?? null);
 
 	let tab = $state('matches');
@@ -86,7 +96,7 @@
 		// the sidebar is a sheet on mobile, so a pick has to get it out of the way of the film
 		if (sidebar.isMobile) sidebar.setOpenMobile(false);
 
-		if (matchId !== activeMatch || activeClipId()) return;
+		if (matchId !== activeMatchId() || activeClipId()) return;
 
 		event.preventDefault();
 		requestMatchRestart(matchId);
@@ -253,14 +263,17 @@
 <Sidebar.Root variant="floating" side="right">
 	<Tabs.Root bind:value={tab} onValueChange={(value) => (tab = value)} class="min-h-0 flex-1 gap-0">
 		<Sidebar.Header class="gap-1 pb-1">
-			<Sidebar.MenuButton class="font-semibold tracking-tight text-primary!">
-				{#snippet child({ props })}
-					<a {...props} href={resolve('/')}
-						><CoffeeIcon />
-						<span>matcha</span></a
-					>
-				{/snippet}
-			</Sidebar.MenuButton>
+			<div class="flex items-center gap-1">
+				<Sidebar.MenuButton class="flex-1 font-semibold tracking-tight text-primary!">
+					{#snippet child({ props })}
+						<a {...props} href={resolve('/')}
+							><CoffeeIcon />
+							<span>matcha</span></a
+						>
+					{/snippet}
+				</Sidebar.MenuButton>
+				<UserMenu {user} />
+			</div>
 			<p class="my-1 px-2 text-sm leading-5 font-medium text-muted-foreground!">
 				{event.name.split(':')[0].toLowerCase()}
 			</p>

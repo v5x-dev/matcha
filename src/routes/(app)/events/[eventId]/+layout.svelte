@@ -4,11 +4,32 @@
 	import EventSidebar from './event-sidebar.svelte';
 
 	const { children, data } = $props();
+
+	// the clip landing card. YouTube thumbnails are deterministic from a video id, so a share of a
+	// clip renders a real frame with no extra requests.
+	const clipMeta = $derived(data.clipMeta);
+	const ogImage = $derived(
+		clipMeta ? `https://i.ytimg.com/vi/${clipMeta.videoId}/hqdefault.jpg` : null
+	);
 </script>
 
-<!-- the page inside sets its own title once the event is here, so this only covers the two states
-	that render in its place -->
 <svelte:head>
+	{#if clipMeta}
+		<meta property="og:type" content="video" />
+		<meta property="og:site_name" content="matcha" />
+		<meta property="og:title" content={clipMeta.title.toLowerCase()} />
+		<meta
+			property="og:description"
+			content={`clip from ${clipMeta.matchName.toLowerCase()} · ${clipMeta.eventName
+				.split(':')[0]
+				.toLowerCase()} · by ${clipMeta.authorName.toLowerCase()}`}
+		/>
+		<meta property="og:image" content={ogImage} />
+		<meta name="twitter:card" content="summary_large_image" />
+	{/if}
+
+	<!-- the page inside sets its own title once the event is here, so this only covers the two states
+		that render in its place -->
 	{#await data.eventPage}
 		<title>loading event · matcha</title>
 	{:then}
